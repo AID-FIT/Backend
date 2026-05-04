@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: aidfit-postgres
+    environment:
+      POSTGRES_USER: aidfit
+      POSTGRES_PASSWORD: aidfit
+      POSTGRES_DB: aidfit
+    ports:
+      - "5432:5432"
+    volumes:
+      - aidfit-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  aidfit-postgres-data:
+
