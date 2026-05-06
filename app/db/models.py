@@ -24,6 +24,7 @@ class User(Base, TimestampMixin):
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nickname: Mapped[str] = mapped_column(String(80))
+    role: Mapped[str] = mapped_column(String(30), default="guest", server_default="guest", index=True)
 
     preferences: Mapped["UserPreference | None"] = relationship(back_populates="user")
     social_identities: Mapped[list["SocialIdentity"]] = relationship(back_populates="user")
@@ -64,6 +65,30 @@ class ImageAsset(Base, TimestampMixin):
     storage_url: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str] = mapped_column(String(120))
     purpose: Mapped[str] = mapped_column(String(40), default="recommendation")
+
+
+class ClosetItem(Base, TimestampMixin):
+    __tablename__ = "closet_items"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id"), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    brand: Mapped[str] = mapped_column(String(120))
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category: Mapped[str] = mapped_column(String(80), index=True)
+    sub_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    image_url: Mapped[str] = mapped_column(Text)
+    product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    material: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    fit: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    pattern: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    mood: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    sense_of_season: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    is_match: Mapped[bool] = mapped_column(default=True)
+    raw_vlm_result: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class Product(Base, TimestampMixin):

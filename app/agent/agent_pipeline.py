@@ -43,7 +43,7 @@ class AidFitAgentPipeline:
     async def run(
         self,
         query: str,
-        image_url: str,
+        image_url: str | None,
         user_id: str | None = None,
         closet_item_id: str | None = None,
         recommendation_target: str = "musinsa",

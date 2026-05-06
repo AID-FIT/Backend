@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.models import User, UserPreference
+from app.db.models import ImageAsset, User, UserPreference
 from app.db.session import get_db
-from app.schemas.user import UserPreferenceUpdate, UserProfileResponse
+from app.schemas.user import OnboardingCompleteRequest, UserPreferenceUpdate, UserProfileResponse
+from app.services.closet_service import ClosetService
+from app.services.user_service import UserService
 
 router = APIRouter()
 
@@ -16,6 +18,7 @@ def _profile_response(user: User, preference: UserPreference | None) -> UserProf
         id=user.id,
         email=user.email,
         nickname=user.nickname,
+        role=user.role,
         age_range=sizes.get("age_range") if isinstance(sizes, dict) else None,
         styles=preference.styles if preference else [],
         preferred_colors=preference.preferred_colors if preference else [],
@@ -39,27 +42,38 @@ async def update_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> UserProfileResponse:
-    result = await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
-    preference = result.scalar_one_or_none()
-    sizes = {**payload.sizes}
-    if payload.age_range:
-        sizes["age_range"] = payload.age_range
-
-    if preference is None:
-        preference = UserPreference(
-            user_id=current_user.id,
-            styles=payload.styles,
-            preferred_colors=payload.preferred_colors,
-            avoid_items=payload.avoid_items,
-            sizes=sizes,
-        )
-        db.add(preference)
-    else:
-        preference.styles = payload.styles
-        preference.preferred_colors = payload.preferred_colors
-        preference.avoid_items = payload.avoid_items
-        preference.sizes = sizes
+    preference = await UserService().upsert_preference(db, current_user, payload)
 
     await db.commit()
+    await db.refresh(preference)
+    return _profile_response(current_user, preference)
+
+
+@router.post("/me/onboarding/complete", response_model=UserProfileResponse)
+async def complete_onboarding(
+    payload: OnboardingCompleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserProfileResponse:
+    preference = await UserService().upsert_preference(db, current_user, payload)
+
+    if payload.closet_image_ids:
+        result = await db.execute(
+            select(ImageAsset).where(
+                ImageAsset.user_id == current_user.id,
+                ImageAsset.id.in_(payload.closet_image_ids),
+            )
+        )
+        images = list(result.scalars().all())
+        if len(images) != len(set(payload.closet_image_ids)):
+            raise HTTPException(status_code=404, detail="Some closet images were not found")
+
+        closet_service = ClosetService()
+        for image in images:
+            await closet_service.analyze_and_store(db, current_user, image)
+
+    current_user.role = "user"
+    await db.commit()
+    await db.refresh(current_user)
     await db.refresh(preference)
     return _profile_response(current_user, preference)

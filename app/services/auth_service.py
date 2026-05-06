@@ -33,6 +33,7 @@ class AuthService:
                 email=user.email,
                 nickname=user.nickname,
                 provider=identity.provider,
+                role=user.role,
             ),
         )
 

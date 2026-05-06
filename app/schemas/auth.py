@@ -22,6 +22,7 @@ class AuthUserResponse(BaseModel):
     email: str | None = None
     nickname: str
     provider: str
+    role: str
 
 
 class AuthResponse(TokenResponse):

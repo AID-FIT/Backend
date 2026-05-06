@@ -14,7 +14,7 @@ class RecommendationCreateRequest(BaseModel):
 
     user_id: str | None = None
     query: str = Field(validation_alias=AliasChoices("query", "prompt"))
-    image_url: str
+    image_url: str | None = None
     closet_item_id: str | None = None
     recommendation_target: str = "musinsa"
     context: dict = Field(default_factory=dict)

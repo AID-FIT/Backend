@@ -10,9 +10,15 @@ from app.db.models import Base
 from app.db.session import engine
 
 
+async def apply_lightweight_migrations(connection) -> None:
+    await connection.exec_driver_sql("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(30) DEFAULT 'guest'")
+    await connection.exec_driver_sql("UPDATE users SET role = 'user' WHERE role IS NULL")
+
+
 async def main() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await apply_lightweight_migrations(connection)
 
 
 if __name__ == "__main__":
