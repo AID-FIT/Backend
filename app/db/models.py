@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -21,11 +21,26 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nickname: Mapped[str] = mapped_column(String(80))
 
     preferences: Mapped["UserPreference | None"] = relationship(back_populates="user")
+    social_identities: Mapped[list["SocialIdentity"]] = relationship(back_populates="user")
+
+
+class SocialIdentity(Base, TimestampMixin):
+    __tablename__ = "social_identities"
+    __table_args__ = (UniqueConstraint("provider", "provider_sub", name="uq_social_provider_sub"),)
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(30), index=True)
+    provider_sub: Mapped[str] = mapped_column(String(255), index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    raw_claims: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    user: Mapped[User] = relationship(back_populates="social_identities")
 
 
 class UserPreference(Base, TimestampMixin):
@@ -124,4 +139,3 @@ class FeedbackEvent(Base, TimestampMixin):
     product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), nullable=True)
     event_type: Mapped[str] = mapped_column(String(40), index=True)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
-

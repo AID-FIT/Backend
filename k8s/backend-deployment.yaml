@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aidfit-backend
+  namespace: aidfit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aidfit-backend
+  template:
+    metadata:
+      labels:
+        app: aidfit-backend
+    spec:
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: init-db
+          image: ghcr.io/aid-fit/backend:latest
+          imagePullPolicy: Always
+          command: ["python", "scripts/init_db.py"]
+          workingDir: /app
+          envFrom:
+            - secretRef:
+                name: aidfit-backend-secret
+      containers:
+        - name: aidfit-backend
+          image: ghcr.io/aid-fit/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: aidfit-backend-secret
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+

@@ -1,0 +1,190 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - deploy
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: aid-fit/backend
+  NAMESPACE: aidfit
+  DEPLOYMENT_NAME: aidfit-backend
+
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      short-sha: ${{ steps.vars.outputs.short_sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.vars.outputs.short_sha }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  deploy:
+    name: Deploy to K3s
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Configure kubectl
+        run: |
+          [ -n "${{ secrets.KUBECONFIG }}" ]     || { echo "KUBECONFIG secret 미설정"; exit 1; }
+          [ -n "${{ secrets.K3S_API_SERVER }}" ] || { echo "K3S_API_SERVER secret 미설정"; exit 1; }
+
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          kubeconfig = Path.home() / ".kube" / "config"
+          lines = kubeconfig.read_text().splitlines()
+          server = os.environ["K3S_API_SERVER"]
+          for i, line in enumerate(lines):
+            if line.lstrip().startswith("server:"):
+              lines[i] = line[:len(line)-len(line.lstrip())] + f"server: {server}"
+              break
+          else:
+            raise SystemExit("kubeconfig에 server 항목 없음")
+          kubeconfig.write_text("\n".join(lines) + "\n")
+          PY
+
+          kubectl config set-cluster default --insecure-skip-tls-verify=true
+        env:
+          K3S_API_SERVER: ${{ secrets.K3S_API_SERVER }}
+
+      - name: Verify cluster connection
+        run: kubectl cluster-info && kubectl get nodes
+
+      - name: Ensure namespace exists
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Apply Secret
+        run: |
+          DATABASE_URL="${{ secrets.DATABASE_URL }}"
+          if [ -z "$DATABASE_URL" ]; then
+            DATABASE_URL="postgresql+asyncpg://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres-svc:5432/${{ secrets.POSTGRES_DB }}"
+          fi
+
+          kubectl create secret generic aidfit-backend-secret \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=APP_NAME="AID-FIT Backend" \
+            --from-literal=ENVIRONMENT="production" \
+            --from-literal=API_V1_PREFIX="/api/v1" \
+            --from-literal=DATABASE_URL="$DATABASE_URL" \
+            --from-literal=POSTGRES_USER="${{ secrets.POSTGRES_USER }}" \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=POSTGRES_DB="${{ secrets.POSTGRES_DB }}" \
+            --from-literal=JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}" \
+            --from-literal=JWT_ALGORITHM="HS256" \
+            --from-literal=ACCESS_TOKEN_EXPIRE_MINUTES="${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}" \
+            --from-literal=LOCAL_UPLOAD_DIR="uploads" \
+            --from-literal=PUBLIC_BASE_URL="${{ secrets.PUBLIC_BASE_URL }}" \
+            --from-literal=CORS_ORIGINS="${{ secrets.CORS_ORIGINS }}" \
+            --from-literal=USE_MOCK_AI="${{ secrets.USE_MOCK_AI }}" \
+            --from-literal=GOOGLE_CLIENT_IDS="${{ secrets.GOOGLE_CLIENT_IDS }}" \
+            --from-literal=APPLE_CLIENT_IDS="${{ secrets.APPLE_CLIENT_IDS }}" \
+            --from-literal=AUTH_ALLOW_UNVERIFIED_TOKENS="${{ secrets.AUTH_ALLOW_UNVERIFIED_TOKENS }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply PostgreSQL manifests
+        run: |
+          kubectl apply -f k8s/postgres-pvc.yaml
+          kubectl apply -f k8s/postgres-deployment.yaml
+          kubectl apply -f k8s/postgres-service.yaml
+
+      - name: Wait for PostgreSQL ready
+        run: |
+          kubectl rollout status deployment/postgres \
+            -n ${{ env.NAMESPACE }} --timeout=2m || {
+            echo "=== Postgres Pods ==="
+            kubectl get pods -n ${{ env.NAMESPACE }} -l app=postgres -o wide
+            echo "=== Events ==="
+            kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' | tail -20
+            exit 1
+          }
+
+      - name: Update backend image tag
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.short-sha }}"
+          sed -i "s|image: ghcr.io/aid-fit/backend:.*|image: ${IMAGE_TAG}|g" k8s/backend-deployment.yaml
+          echo "Deploying: ${IMAGE_TAG}"
+
+      - name: Apply Backend manifests
+        run: |
+          kubectl apply -f k8s/backend-service.yaml
+          kubectl apply -f k8s/backend-deployment.yaml
+
+      - name: Wait for Backend rollout
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n ${{ env.NAMESPACE }} --timeout=3m || {
+            echo "=== Pods ==="
+            kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+            echo "=== Events ==="
+            kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' | tail -20
+            echo "=== Logs (init-db) ==="
+            kubectl logs -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT_NAME }} -c init-db --tail=50 || true
+            echo "=== Logs (app) ==="
+            kubectl logs -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT_NAME }} -c aidfit-backend --tail=100 || true
+            exit 1
+          }
+
+      - name: Verify
+        run: |
+          kubectl get deployments -n ${{ env.NAMESPACE }}
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          kubectl get services -n ${{ env.NAMESPACE }}
+

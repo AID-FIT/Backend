@@ -58,10 +58,23 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 docker compose up -d
+python scripts/init_db.py
 uvicorn app.main:app --reload
 ```
 
 Swagger 문서는 서버 실행 후 `http://localhost:8000/docs`에서 확인할 수 있습니다.
+
+## K3s Deployment
+
+K3s 배포 파일과 운영 스크립트가 포함되어 있습니다.
+
+```bash
+cp .env.k3s.example .env.k3s
+chmod +x scripts/k3s/*.sh
+scripts/k3s/deploy.sh
+```
+
+배포 구조와 GitHub Actions secret 설정은 [docs/ops/k3s_deployment.md](docs/ops/k3s_deployment.md)를 확인하세요.
 
 ## Environment
 
@@ -73,6 +86,9 @@ Swagger 문서는 서버 실행 후 `http://localhost:8000/docs`에서 확인할
 | `PUBLIC_BASE_URL` | 업로드 URL 생성 기준 | `http://localhost:8000` |
 | `CORS_ORIGINS` | 프론트엔드 허용 Origin 목록 | `http://localhost:8081,http://localhost:19006` |
 | `USE_MOCK_AI` | mock AI 사용 여부 | `true` |
+| `GOOGLE_CLIENT_IDS` | 허용할 Google OAuth client ID 목록 | `ios-client-id,web-client-id` |
+| `APPLE_CLIENT_IDS` | 허용할 Apple Bundle ID 또는 Services ID 목록 | `com.aidfit.app` |
+| `AUTH_ALLOW_UNVERIFIED_TOKENS` | 로컬 테스트용 서명 검증 우회. 운영 금지 | `false` |
 
 ## API Spec
 
@@ -110,6 +126,86 @@ Request:
   "password": "password"
 }
 ```
+
+#### `POST /auth/google`
+
+프론트엔드가 Google SDK에서 받은 `id_token`을 백엔드로 전달하면, 백엔드는 Google JWKS로 서명을 검증하고 `iss`, `aud`, `exp`, 선택적 `nonce`를 확인한 뒤 내부 JWT를 발급합니다.
+
+Request:
+
+```json
+{
+  "id_token": "google-id-token",
+  "nonce": "optional-nonce",
+  "display_name": "김태훈"
+}
+```
+
+Response:
+
+```json
+{
+  "access_token": "aidfit-jwt",
+  "token_type": "bearer",
+  "user": {
+    "id": "user-uuid",
+    "email": "user@gmail.com",
+    "nickname": "김태훈",
+    "provider": "google"
+  }
+}
+```
+
+Validation rules:
+
+| Claim | Rule |
+| --- | --- |
+| `sub` | Google 계정의 고유 식별자. DB의 `social_identities.provider_sub`로 저장 |
+| `iss` | `https://accounts.google.com` 또는 `accounts.google.com` |
+| `aud` | `.env`의 `GOOGLE_CLIENT_IDS` 중 하나 |
+| `exp` | 만료 전이어야 함 |
+| `nonce` | 요청에 `nonce`가 있으면 토큰 claim과 일치해야 함 |
+
+#### `POST /auth/apple`
+
+프론트엔드가 Sign in with Apple에서 받은 identity token을 백엔드로 전달하면, 백엔드는 Apple JWKS로 서명을 검증하고 `iss`, `aud`, `exp`, 선택적 `nonce`를 확인한 뒤 내부 JWT를 발급합니다.
+
+Request:
+
+```json
+{
+  "id_token": "apple-identity-token",
+  "nonce": "optional-nonce",
+  "display_name": "김태훈"
+}
+```
+
+Response:
+
+```json
+{
+  "access_token": "aidfit-jwt",
+  "token_type": "bearer",
+  "user": {
+    "id": "user-uuid",
+    "email": "private-relay-or-real-email@privaterelay.appleid.com",
+    "nickname": "김태훈",
+    "provider": "apple"
+  }
+}
+```
+
+Validation rules:
+
+| Claim | Rule |
+| --- | --- |
+| `sub` | Apple 계정의 앱 기준 고유 식별자. DB의 `social_identities.provider_sub`로 저장 |
+| `iss` | `https://appleid.apple.com` |
+| `aud` | `.env`의 `APPLE_CLIENT_IDS` 중 하나 |
+| `exp` | 만료 전이어야 함 |
+| `nonce` | 요청에 `nonce`가 있으면 토큰 claim과 일치해야 함 |
+
+주의: Apple은 최초 로그인 이후 이름을 다시 내려주지 않을 수 있으므로, 프론트엔드는 최초 응답의 이름을 `display_name`으로 함께 보내고 백엔드는 즉시 저장해야 합니다.
 
 Response:
 
@@ -317,6 +413,7 @@ Response:
 | Table | Purpose |
 | --- | --- |
 | `users` | 사용자 계정 |
+| `social_identities` | Google/Apple provider와 provider `sub` 매핑 |
 | `user_preferences` | 선호 스타일, 색상, 회피 아이템, 사이즈 |
 | `images` | 업로드 이미지 메타데이터 |
 | `products` | 의류 상품 원본 메타데이터 |
@@ -377,4 +474,3 @@ LLM은 반드시 RAG가 반환한 `rag_items` 내부 상품만 추천해야 합�
 - Auth는 JWT 발급 골격만 있으며 실제 사용자 검증은 미구현입니다.
 - S3 저장은 `StorageService` 교체 지점만 마련되어 있고 현재는 로컬 저장입니다.
 - 프론트엔드 실연동 시 `src/services/apiClient.ts`의 `baseURL`을 `http://localhost:8000/api/v1`로 변경해야 합니다.
-

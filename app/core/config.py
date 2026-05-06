@@ -22,6 +22,9 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
     use_mock_ai: bool = True
+    google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
+    apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
+    auth_allow_unverified_tokens: bool = False
 
     @property
     def cors_origins(self) -> list[str]:
@@ -31,6 +34,14 @@ class Settings(BaseSettings):
     def upload_dir(self) -> Path:
         return Path(self.local_upload_dir)
 
+    @property
+    def google_client_ids(self) -> list[str]:
+        return [client_id.strip() for client_id in self.google_client_ids_raw.split(",") if client_id.strip()]
+
+    @property
+    def apple_client_ids(self) -> list[str]:
+        return [client_id.strip() for client_id in self.apple_client_ids_raw.split(",") if client_id.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -38,4 +49,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-
