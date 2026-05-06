@@ -426,42 +426,79 @@ Response:
 
 ## Team Integration Contracts
 
-### Vision/VLM Contract
+### Backend -> Agent Contract
 
-`VlmService.analyze(image_url, prompt)`는 다음 구조를 반환해야 합니다.
+`POST /api/v1/recommendations`는 Agent 호출 계약을 그대로 수용합니다. 기존 프론트 호환을 위해 `prompt`도 임시로 `query` alias로 허용합니다.
 
 ```json
 {
-  "is_clothing": true,
-  "confidence": 92,
-  "colors": ["화이트"],
-  "materials": ["코튼"],
-  "fit": ["오버핏"],
-  "mood": ["캐주얼"],
-  "detected_item": "셔츠"
+  "user_id": "user_001",
+  "query": "이 셔츠랑 어울리는 바지를 추천해줘",
+  "image_url": "https://example.com/input-shirt.jpg",
+  "closet_item_id": null,
+  "recommendation_target": "musinsa",
+  "context": {
+    "season": "spring",
+    "occasion": "daily",
+    "preferred_style": ["minimal", "casual"]
+  }
 }
 ```
 
-`is_clothing=false`이면 LangGraph는 RAG 검색으로 넘어가지 않고 fallback 응답을 반환합니다.
-
-### RAG Contract
-
-`RagService.search(query, limit)`는 상품 딕셔너리 리스트를 반환해야 합니다.
+### Agent -> Backend Contract
 
 ```json
-[
-  {
-    "id": "prod_1",
-    "brand": "AID BASIC",
-    "name": "린넨 오버 셔츠",
-    "category": "상의",
-    "price": 39900,
-    "image_url": "https://...",
-    "imageTone": "#f5f7fa",
-    "tags": ["린넨", "오버핏"]
+{
+  "status": "success",
+  "message": "화이트 셔츠에는 미니멀한 세미 와이드 데님 팬츠가 잘 어울립니다.",
+  "recommendations": [
+    {
+      "item_id": "musinsa_10001",
+      "source": "musinsa",
+      "item_name": "세미 와이드 데님 팬츠",
+      "brand": "Example Brand",
+      "category": "pants",
+      "image_url": "https://image.musinsa.com/10001.jpg",
+      "product_url": "https://www.musinsa.com/products/10001",
+      "price": 59000,
+      "reason": "화이트 셔츠의 깔끔한 무드와 데님의 캐주얼함이 잘 어울립니다."
+    }
+  ],
+  "style_guide": {
+    "summary": "미니멀 캐주얼 코디",
+    "tips": [
+      "상의가 밝은 색이므로 하의는 중청 또는 진청 계열이 안정적입니다.",
+      "신발은 화이트 스니커즈를 추천합니다."
+    ]
   }
-]
+}
 ```
+
+### Vision/VLM Contract
+
+`VlmService.analyze(image_url, query)`는 옷장 이미지 분석 결과를 다음 구조로 반환해야 합니다. `"sense of season"`은 API 출력에서도 같은 키를 유지합니다.
+
+```json
+{
+  "name": "에이프 헤드 클리어 백(M) BLACK",
+  "brand": "베이프",
+  "price": 115000,
+  "category": "가방",
+  "sub_category": "남자 가방",
+  "gender": "men",
+  "image_url": "https://image.msscdn.net/images/goods_img/20260325/6190928/6190928_17751824974403_500.jpg",
+  "product_url": "https://www.musinsa.com/products/6190928",
+  "color": "black",
+  "material": "pvc",
+  "fit": "none",
+  "pattern": "graphic",
+  "mood": "street",
+  "sense of season": "summer",
+  "is_match": true
+}
+```
+
+`is_match=false`이면 LangGraph는 RAG 검색으로 넘어가지 않고 fallback 응답을 반환합니다.
 
 ### Agent/LLM Contract
 

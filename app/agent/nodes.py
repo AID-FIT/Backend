@@ -17,22 +17,21 @@ class AgentNodes:
         self.llm_service = llm_service or LlmService()
 
     async def vlm_node(self, state: AgentState) -> AgentState:
-        result = await self.vlm_service.analyze(state["image_url"], state["prompt"])
+        result = await self.vlm_service.analyze(state["image_url"], state["query"])
         state["vlm_result"] = result
-        state["is_clothing"] = bool(result.get("is_clothing"))
-        if not state["is_clothing"]:
-            state["error"] = "NOT_CLOTHING_IMAGE"
+        state["is_match"] = bool(result.get("is_match"))
+        if not state["is_match"]:
+            state["error"] = "NOT_MATCHING_CLOSET_IMAGE"
         return state
 
     async def rag_node(self, state: AgentState) -> AgentState:
-        query = build_rag_query(state["vlm_result"], state["prompt"])
+        query = build_rag_query(state["vlm_result"], state["query"])
         state["rag_query"] = query
         state["rag_items"] = await self.rag_service.search(query)
         return state
 
     async def llm_node(self, state: AgentState) -> AgentState:
         state["final_answer"] = await self.llm_service.compose_recommendation(
-            state["prompt"], state["vlm_result"], state["rag_items"]
+            state["query"], state["vlm_result"], state["rag_items"]
         )
         return state
-
