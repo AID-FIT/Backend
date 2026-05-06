@@ -22,3 +22,19 @@ async def get_product(product_id: str) -> ProductResponse:
             )
     raise HTTPException(status_code=404, detail="Product not found")
 
+
+@router.get("", response_model=list[ProductResponse])
+async def list_products(q: str = "데일리", limit: int = 10) -> list[ProductResponse]:
+    products = await RagService().search(q, limit=limit)
+    return [
+        ProductResponse(
+            id=product["id"],
+            brand=product["brand"],
+            name=product["name"],
+            category=product["category"],
+            price=product.get("price"),
+            image_url=product.get("image_url"),
+            tags=product.get("tags", []),
+        )
+        for product in products
+    ]

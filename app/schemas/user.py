@@ -3,8 +3,9 @@ from pydantic import BaseModel, Field
 
 class UserProfileResponse(BaseModel):
     id: str
-    email: str
+    email: str | None = None
     nickname: str
+    age_range: str | None = None
     styles: list[str] = Field(default_factory=list)
     preferred_colors: list[str] = Field(default_factory=list)
     avoid_items: list[str] = Field(default_factory=list)
@@ -12,8 +13,8 @@ class UserProfileResponse(BaseModel):
 
 
 class UserPreferenceUpdate(BaseModel):
+    age_range: str | None = None
     styles: list[str] = Field(default_factory=list)
     preferred_colors: list[str] = Field(default_factory=list)
     avoid_items: list[str] = Field(default_factory=list)
     sizes: dict = Field(default_factory=dict)
-
