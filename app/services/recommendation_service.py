@@ -8,7 +8,7 @@ class RecommendationService:
     async def create(
         self,
         query: str,
-        image_url: str,
+        image_url: str | None,
         user_id: str | None,
         closet_item_id: str | None,
         recommendation_target: str,

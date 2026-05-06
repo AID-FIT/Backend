@@ -4,7 +4,7 @@ from typing import Any, TypedDict
 class AgentState(TypedDict, total=False):
     user_id: str | None
     query: str
-    image_url: str
+    image_url: str | None
     closet_item_id: str | None
     recommendation_target: str
     context: dict[str, Any]
