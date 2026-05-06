@@ -10,11 +10,12 @@ router = APIRouter()
 async def get_product(product_id: str) -> ProductResponse:
     products = await RagService().search(product_id)
     for product in products:
-        if product["id"] == product_id:
+        item_id = product.get("item_id") or product.get("id")
+        if item_id == product_id:
             return ProductResponse(
-                id=product["id"],
+                id=item_id,
                 brand=product["brand"],
-                name=product["name"],
+                name=product.get("item_name") or product["name"],
                 category=product["category"],
                 price=product.get("price"),
                 image_url=product.get("image_url"),
@@ -28,9 +29,9 @@ async def list_products(q: str = "데일리", limit: int = 10) -> list[ProductRe
     products = await RagService().search(q, limit=limit)
     return [
         ProductResponse(
-            id=product["id"],
+            id=product.get("item_id") or product["id"],
             brand=product["brand"],
-            name=product["name"],
+            name=product.get("item_name") or product["name"],
             category=product["category"],
             price=product.get("price"),
             image_url=product.get("image_url"),
