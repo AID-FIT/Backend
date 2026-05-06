@@ -32,17 +32,26 @@ class JwksCache:
         if cached and cached[0] > now:
             return cached[1]
 
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OAuth key server is temporarily unavailable",
+            ) from exc
 
         max_age = 3600
         cache_control = response.headers.get("cache-control", "")
         for part in cache_control.split(","):
             part = part.strip()
             if part.startswith("max-age="):
-                max_age = int(part.split("=", 1)[1])
+                try:
+                    max_age = int(part.split("=", 1)[1])
+                except ValueError:
+                    max_age = 3600
                 break
 
         keys = data.get("keys", [])
@@ -121,13 +130,16 @@ class OAuthTokenVerifier:
         )
 
     def _decode_unverified(self, provider: str, token: str) -> VerifiedIdentity:
-        claims = jwt.get_unverified_claims(token)
+        try:
+            claims = jwt.get_unverified_claims(token)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed id_token") from exc
         return self._claims_to_identity(provider, claims)
 
     def _get_token_header(self, token: str) -> dict[str, Any]:
         try:
             return jwt.get_unverified_header(token)
-        except JWTError as exc:
+        except Exception as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Malformed id_token") from exc
 
     def _verify_nonce(self, claims: dict[str, Any], nonce: str | None) -> None:
@@ -149,4 +161,3 @@ class OAuthTokenVerifier:
             name=claims.get("name"),
             claims=claims,
         )
-
