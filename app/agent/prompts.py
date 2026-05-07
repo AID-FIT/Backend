@@ -11,15 +11,19 @@ STYLE_DIRECTOR_SYSTEM_PROMPT = """
 
 
 def build_rag_query(vlm_result: dict, query: str) -> str:
-    keywords = [
-        vlm_result.get("color"),
-        vlm_result.get("material"),
-        vlm_result.get("fit"),
-        vlm_result.get("pattern"),
-        vlm_result.get("mood"),
-        vlm_result.get("sense of season"),
-        vlm_result.get("category"),
-        vlm_result.get("sub_category"),
-        query,
-    ]
+    vlm_items = vlm_result.get("items") if isinstance(vlm_result.get("items"), list) else [vlm_result]
+    keywords = [query]
+    for item in vlm_items:
+        keywords.extend(
+            [
+                item.get("color"),
+                item.get("material"),
+                item.get("fit"),
+                item.get("pattern"),
+                item.get("mood"),
+                item.get("sense_of_season") or item.get("sense of season"),
+                item.get("category"),
+                item.get("label"),
+            ]
+        )
     return " ".join(str(keyword) for keyword in keywords if keyword)

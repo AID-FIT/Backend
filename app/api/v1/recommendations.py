@@ -18,9 +18,21 @@ HOME_RECOMMENDATION_QUERY = (
 )
 
 
+def normalize_user_profile(profile: dict) -> dict:
+    normalized = dict(profile or {})
+    if "preferred_styles" not in normalized and "preferred_style" in normalized:
+        normalized["preferred_styles"] = normalized["preferred_style"]
+    if "preferred_style" not in normalized and "preferred_styles" in normalized:
+        normalized["preferred_style"] = normalized["preferred_styles"]
+    normalized.setdefault("include_closet", False)
+    normalized.setdefault("closet_items", [])
+    return normalized
+
+
 @router.post("", response_model=RecommendationResponse)
 async def create_recommendation(payload: RecommendationCreateRequest) -> RecommendationResponse:
     image_urls = payload.image_urls or ([payload.image_url] if payload.image_url else [])
+    user_profile = normalize_user_profile(payload.user_profile)
     result = await RecommendationService().create(
         query=payload.query,
         image_url=payload.image_url or (image_urls[0] if image_urls else None),
@@ -29,7 +41,7 @@ async def create_recommendation(payload: RecommendationCreateRequest) -> Recomme
         recommendation_target=payload.recommendation_target,
         context=payload.context,
         image_urls=image_urls,
-        user_profile=payload.user_profile,
+        user_profile=user_profile,
     )
     return RecommendationResponse(**result)
 
@@ -60,6 +72,7 @@ async def get_home_recommendation(
     ]
     user_profile = {
         "age_group": age_range,
+        "preferred_styles": preference.styles if preference else [],
         "preferred_style": preference.styles if preference else [],
         "include_closet": True,
         "closet_items": closet_payload,
