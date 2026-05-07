@@ -26,8 +26,11 @@ class AgentNodes:
 
     async def rag_node(self, state: AgentState) -> AgentState:
         query = build_rag_query(state["vlm_result"], state["query"])
+        context = state.get("context") or {}
+        limit = int(context.get("limit") or 5)
+        refresh_seed = int(context.get("refresh_seed") or 0)
         state["rag_query"] = query
-        state["rag_items"] = await self.rag_service.search(query)
+        state["rag_items"] = await self.rag_service.search(query, limit=limit, refresh_seed=refresh_seed)
         return state
 
     async def llm_node(self, state: AgentState) -> AgentState:
