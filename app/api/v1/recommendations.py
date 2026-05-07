@@ -52,6 +52,7 @@ async def get_home_recommendation(
         context={
             "refresh_seed": max(refresh_seed, 0),
             "limit": 5,
+            "outfit_set": True,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
             "closet_items": [

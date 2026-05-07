@@ -1,5 +1,11 @@
 class RagService:
-    async def search(self, query: str, limit: int = 5, refresh_seed: int = 0) -> list[dict]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        refresh_seed: int = 0,
+        outfit_set: bool = False,
+    ) -> list[dict]:
         # RAG 팀의 ChromaDB/FAISS 검색 함수가 준비되면 이 메서드 내부만 교체한다.
         catalog = [
             {
@@ -138,6 +144,16 @@ class RagService:
 
         if not catalog or limit <= 0:
             return []
+
+        if outfit_set:
+            outfit_sets = [
+                ["musinsa_10011", "musinsa_10007", "musinsa_10001", "musinsa_10003", "musinsa_10005"],
+                ["musinsa_10011", "musinsa_10010", "musinsa_10006", "musinsa_10008", "musinsa_10012"],
+                ["musinsa_10011", "musinsa_10004", "musinsa_10002", "musinsa_10003", "musinsa_10009"],
+            ]
+            catalog_by_id = {item["item_id"]: item for item in catalog}
+            selected_ids = outfit_sets[max(refresh_seed, 0) % len(outfit_sets)]
+            return [catalog_by_id[item_id] for item_id in selected_ids if item_id in catalog_by_id][:limit]
 
         start = (max(refresh_seed, 0) * limit) % len(catalog)
         return [catalog[(start + offset) % len(catalog)] for offset in range(min(limit, len(catalog)))]
