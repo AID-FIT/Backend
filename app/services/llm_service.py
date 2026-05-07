@@ -4,7 +4,7 @@ class LlmService:
     ) -> dict:
         # LLM API 연동 전까지 rag_items만 사용해 deterministic 응답을 만든다.
         recommendations = []
-        for product in rag_items[:3]:
+        for product in rag_items[:5]:
             reason = (
                 f"{vlm_result.get('color', '기준 의류')} {vlm_result.get('category', '아이템')}의 "
                 f"{vlm_result.get('mood', '스타일')} 무드와 잘 이어지는 {product['category']}입니다."

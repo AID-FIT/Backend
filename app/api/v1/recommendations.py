@@ -51,7 +51,7 @@ async def get_home_recommendation(
         recommendation_target="musinsa",
         context={
             "refresh_seed": max(refresh_seed, 0),
-            "limit": 4,
+            "limit": 5,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
             "closet_items": [
