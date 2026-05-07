@@ -83,8 +83,8 @@ scripts/k3s/deploy.sh
 | `DATABASE_URL` | PostgreSQL async 연결 문자열 | `postgresql+asyncpg://aidfit:aidfit@localhost:5432/aidfit` |
 | `JWT_SECRET_KEY` | JWT 서명 키 | `change-me` |
 | `LOCAL_UPLOAD_DIR` | 로컬 이미지 저장 폴더 | `uploads` |
-| `PUBLIC_BASE_URL` | 업로드 URL 생성 기준 | `http://localhost:8000` |
-| `CORS_ORIGINS` | 프론트엔드 허용 Origin 목록 | `http://localhost:8081,http://localhost:19006` |
+| `PUBLIC_BASE_URL` | 업로드 URL 생성 기준 | `http://localhost:8000`, `https://api.aidfit.o-r.kr` |
+| `CORS_ORIGINS` | 프론트엔드 허용 Origin 목록 | `http://localhost:8081,http://localhost:19006,http://devse.kr:12571` |
 | `USE_MOCK_AI` | mock AI 사용 여부 | `true` |
 | `GOOGLE_CLIENT_IDS` | 허용할 Google OAuth client ID 목록 | `ios-client-id,web-client-id` |
 | `APPLE_CLIENT_IDS` | 허용할 Apple Bundle ID 또는 Services ID 목록 | `com.aidfit.app` |

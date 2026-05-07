@@ -56,8 +56,8 @@ scripts/k3s/logs.sh
 백엔드 URL:
 
 ```text
-http://SERVER_IP_OR_DOMAIN:12570/api/v1/health
-http://SERVER_IP_OR_DOMAIN:12570/docs
+https://api.aidfit.o-r.kr/api/v1/health
+https://api.aidfit.o-r.kr/docs
 ```
 
 ## Required `.env.k3s`
@@ -67,8 +67,8 @@ POSTGRES_USER=aidfit
 POSTGRES_PASSWORD=change-me
 POSTGRES_DB=aidfit
 JWT_SECRET_KEY=change-me-to-a-long-random-secret
-PUBLIC_BASE_URL=http://SERVER_IP_OR_DOMAIN:12570
-CORS_ORIGINS=http://localhost:8081,http://localhost:19006,http://FRONTEND_ORIGIN
+PUBLIC_BASE_URL=https://api.aidfit.o-r.kr
+CORS_ORIGINS=http://localhost:8081,http://localhost:19006,http://devse.kr:12571
 GOOGLE_CLIENT_IDS=
 APPLE_CLIENT_IDS=
 AUTH_ALLOW_UNVERIFIED_TOKENS=false
@@ -93,7 +93,7 @@ Required GitHub Secrets:
 | `DATABASE_URL` | 선택. 비우면 workflow가 `postgres-svc` 기준으로 생성 |
 | `JWT_SECRET_KEY` | AID-FIT JWT 서명 키 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 예: `10080` |
-| `PUBLIC_BASE_URL` | 예: `http://SERVER_IP_OR_DOMAIN:12570` |
+| `PUBLIC_BASE_URL` | 예: `https://api.aidfit.o-r.kr` |
 | `CORS_ORIGINS` | 프론트엔드 origin 목록 |
 | `USE_MOCK_AI` | MVP는 `true` |
 | `GOOGLE_CLIENT_IDS` | Google OAuth client IDs |
@@ -122,4 +122,3 @@ K3s deployment의 image tag는 workflow에서 short SHA로 치환됩니다.
 - 이 프로젝트에는 아직 Alembic migration이 없으므로 backend initContainer는 `python scripts/init_db.py`를 실행합니다.
 - 나중에 Alembic을 도입하면 `k8s/backend-deployment.yaml`의 initContainer command를 `alembic upgrade head`로 교체하면 됩니다.
 - PostgreSQL PVC 삭제는 데이터 삭제입니다. `scripts/k3s/delete.sh`는 PVC와 namespace를 지우지 않습니다.
-
