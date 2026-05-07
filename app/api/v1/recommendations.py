@@ -34,6 +34,7 @@ async def create_recommendation(payload: RecommendationCreateRequest) -> Recomme
 @router.get("/home", response_model=RecommendationResponse)
 async def get_home_recommendation(
     prompt: str = "",
+    refresh_seed: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RecommendationResponse:
@@ -49,6 +50,8 @@ async def get_home_recommendation(
         closet_item_id=closet_items[0].id if closet_items else None,
         recommendation_target="musinsa",
         context={
+            "refresh_seed": max(refresh_seed, 0),
+            "limit": 4,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
             "closet_items": [
