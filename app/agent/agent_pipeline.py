@@ -6,8 +6,29 @@ from app.agent.nodes import AgentNodes
 from app.agent.state import AgentState
 
 
-def route_after_vlm(state: AgentState) -> str:
-    return "fallback" if state.get("error") else "rag"
+def route_after_validation(state: AgentState) -> str:
+    return "error" if state.get("error") else "image_check"
+
+
+def route_after_image_check(state: AgentState) -> str:
+    return "vlm" if state.get("has_image") else "intent"
+
+
+def route_after_fashion_check(state: AgentState) -> str:
+    return "error" if state.get("error") else "intent"
+
+
+def retrieval_router(state: AgentState) -> str:
+    target = state.get("retrieval_target", "musinsa")
+    return target if target in {"closet", "musinsa", "hybrid"} else "musinsa"
+
+
+def route_after_rag_result_check(state: AgentState) -> str:
+    return "style_ranker" if state.get("has_rag_result") else "fallback_search"
+
+
+def route_after_fallback(state: AgentState) -> str:
+    return "style_ranker" if state.get("has_rag_result") else "final_response"
 
 
 class AidFitAgentPipeline:
@@ -17,28 +38,57 @@ class AidFitAgentPipeline:
 
     def _compile(self):
         graph = StateGraph(AgentState)
+        graph.add_node("input_validation", self.nodes.input_validation_node)
+        graph.add_node("image_check", self.nodes.image_check_node)
         graph.add_node("vlm", self.nodes.vlm_node)
-        graph.add_node("rag", self.nodes.rag_node)
-        graph.add_node("llm", self.nodes.llm_node)
-        graph.add_node("fallback", self._fallback_node)
-        graph.set_entry_point("vlm")
-        graph.add_conditional_edges("vlm", route_after_vlm, {"rag": "rag", "fallback": "fallback"})
-        graph.add_edge("rag", "llm")
-        graph.add_edge("llm", END)
-        graph.add_edge("fallback", END)
-        return graph.compile()
+        graph.add_node("fashion_item_check", self.nodes.fashion_item_check_node)
+        graph.add_node("intent_classifier", self.nodes.intent_classifier_node)
+        graph.add_node("build_rag_request", self.nodes.build_rag_request_node)
+        graph.add_node("closet_rag", self.nodes.closet_rag_node)
+        graph.add_node("musinsa_rag", self.nodes.musinsa_rag_node)
+        graph.add_node("hybrid_rag", self.nodes.hybrid_rag_node)
+        graph.add_node("rag_result_check", self.nodes.rag_result_check_node)
+        graph.add_node("fallback_search", self.nodes.fallback_search_node)
+        graph.add_node("style_ranker", self.nodes.style_ranker_node)
+        graph.add_node("final_response", self.nodes.final_response_node)
+        graph.add_node("error_response", self.nodes.error_response_node)
 
-    async def _fallback_node(self, state: AgentState) -> AgentState:
-        state["final_answer"] = {
-            "status": "fallback",
-            "message": "업로드된 옷장 이미지가 요청 조건과 충분히 매칭되지 않았습니다.",
-            "recommendations": [],
-            "style_guide": {
-                "summary": "이미지 확인 필요",
-                "tips": ["분석 가능한 의류 사진을 다시 업로드해 주세요."],
-            },
-        }
-        return state
+        graph.set_entry_point("input_validation")
+        graph.add_conditional_edges(
+            "input_validation",
+            route_after_validation,
+            {"image_check": "image_check", "error": "error_response"},
+        )
+        graph.add_conditional_edges("image_check", route_after_image_check, {"vlm": "vlm", "intent": "intent_classifier"})
+        graph.add_edge("vlm", "fashion_item_check")
+        graph.add_conditional_edges(
+            "fashion_item_check",
+            route_after_fashion_check,
+            {"intent": "intent_classifier", "error": "error_response"},
+        )
+        graph.add_edge("intent_classifier", "build_rag_request")
+        graph.add_conditional_edges(
+            "build_rag_request",
+            retrieval_router,
+            {"closet": "closet_rag", "musinsa": "musinsa_rag", "hybrid": "hybrid_rag"},
+        )
+        graph.add_edge("closet_rag", "rag_result_check")
+        graph.add_edge("musinsa_rag", "rag_result_check")
+        graph.add_edge("hybrid_rag", "rag_result_check")
+        graph.add_conditional_edges(
+            "rag_result_check",
+            route_after_rag_result_check,
+            {"style_ranker": "style_ranker", "fallback_search": "fallback_search"},
+        )
+        graph.add_conditional_edges(
+            "fallback_search",
+            route_after_fallback,
+            {"style_ranker": "style_ranker", "final_response": "final_response"},
+        )
+        graph.add_edge("style_ranker", "final_response")
+        graph.add_edge("final_response", END)
+        graph.add_edge("error_response", END)
+        return graph.compile()
 
     async def run(
         self,
@@ -64,9 +114,9 @@ class AidFitAgentPipeline:
             "error": None,
         }
         result = await self.graph.ainvoke(state)
-        answer = result["final_answer"]
+        response = result["final_response"]
         return {
             "request_id": f"rec_{uuid4().hex[:12]}",
-            **answer,
-            "vlm_result": result.get("vlm_result", {}),
+            **response,
+            "vlm_result": {"items": result.get("vlm_items", [])},
         }

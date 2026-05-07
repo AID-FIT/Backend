@@ -23,12 +23,12 @@ class RecommendationCreateRequest(BaseModel):
 
 
 class AgentRecommendationItem(BaseModel):
-    item_id: str
-    source: str
-    item_name: str
-    brand: str
-    category: str
-    image_url: str | None = None
+    item_id: str | None = None
+    source: Literal["closet", "musinsa"]
+    item_name: str | None = None
+    brand: str | None = None
+    category: str | None = None
+    image_url: str
     product_url: str | None = None
     price: int | None = None
     reason: str
@@ -42,13 +42,13 @@ class StyleGuide(BaseModel):
 class VlmItemAnalysis(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    name: str
-    brand: str
+    name: str | None = None
+    brand: str | None = None
     price: int | None = None
-    category: str
-    sub_category: str | None = None
+    category: str | None = None
+    label: str | None = None
     gender: str | None = None
-    image_url: str
+    thumbnail_url: str | None = None
     product_url: str | None = None
     color: str | None = None
     material: str | None = None
@@ -56,15 +56,22 @@ class VlmItemAnalysis(BaseModel):
     pattern: str | None = None
     mood: str | None = None
     sense_of_season: str | None = Field(default=None, alias="sense of season")
-    is_match: bool
+
+
+class AgentError(BaseModel):
+    code: str
+    message: str
+    retryable: bool
+    source: Literal["agent", "vlm", "rag", "backend"]
 
 
 class RecommendationResponse(BaseModel):
-    status: Literal["success", "fallback", "error"]
+    status: Literal["success", "empty", "error"]
     message: str
     recommendations: list[AgentRecommendationItem] = Field(default_factory=list)
-    style_guide: StyleGuide
-    vlm_result: VlmItemAnalysis | None = None
+    style_guide: StyleGuide | None = None
+    error: AgentError | None = None
+    vlm_result: dict | None = None
     request_id: str | None = None
 
 

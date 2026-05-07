@@ -1,4 +1,6 @@
 class RagService:
+    FALLBACK_IMAGE_URL = "https://image.msscdn.net/images/no_image_500.png"
+
     async def search(
         self,
         query: str,
@@ -26,7 +28,7 @@ class RagService:
                 "brand": "AID BASIC",
                 "category": "pants",
                 "price": 59000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10002",
                 "tags": ["cotton", "wide", "casual"],
             },
@@ -37,7 +39,7 @@ class RagService:
                 "brand": "AID WALK",
                 "category": "shoes",
                 "price": 69000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10003",
                 "tags": ["sneakers", "white", "daily"],
             },
@@ -48,7 +50,7 @@ class RagService:
                 "brand": "AID OUTER",
                 "category": "shirt",
                 "price": 49000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10004",
                 "tags": ["nylon", "light", "spring"],
             },
@@ -59,7 +61,7 @@ class RagService:
                 "brand": "AID BAG",
                 "category": "bag",
                 "price": 42000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10005",
                 "tags": ["minimal", "black", "daily"],
             },
@@ -70,7 +72,7 @@ class RagService:
                 "brand": "AID SUMMER",
                 "category": "pants",
                 "price": 65000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10006",
                 "tags": ["linen", "wide", "summer"],
             },
@@ -81,7 +83,7 @@ class RagService:
                 "brand": "AID STREET",
                 "category": "top",
                 "price": 35000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10007",
                 "tags": ["graphic", "street", "summer"],
             },
@@ -92,7 +94,7 @@ class RagService:
                 "brand": "AID WALK",
                 "category": "shoes",
                 "price": 79000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10008",
                 "tags": ["loafer", "classic", "date"],
             },
@@ -103,7 +105,7 @@ class RagService:
                 "brand": "AID DENIM",
                 "category": "outer",
                 "price": 89000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10009",
                 "tags": ["denim", "casual", "layer"],
             },
@@ -114,7 +116,7 @@ class RagService:
                 "brand": "AID KNIT",
                 "category": "top",
                 "price": 54000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10010",
                 "tags": ["knit", "soft", "minimal"],
             },
@@ -125,7 +127,7 @@ class RagService:
                 "brand": "AID CAP",
                 "category": "cap",
                 "price": 29000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10011",
                 "tags": ["cap", "tone-on-tone", "casual"],
             },
@@ -136,7 +138,7 @@ class RagService:
                 "brand": "AID ACC",
                 "category": "accessory",
                 "price": 25000,
-                "image_url": None,
+                "image_url": self.FALLBACK_IMAGE_URL,
                 "product_url": "https://www.musinsa.com/products/10012",
                 "tags": ["belt", "classic", "minimal"],
             },
@@ -157,3 +159,38 @@ class RagService:
 
         start = (max(refresh_seed, 0) * limit) % len(catalog)
         return [catalog[(start + offset) % len(catalog)] for offset in range(min(limit, len(catalog)))]
+
+    async def search_request(self, rag_request: dict) -> dict:
+        items = await self.search(
+            rag_request.get("query", ""),
+            limit=int(rag_request.get("top_k") or 10),
+            refresh_seed=int((rag_request.get("filters") or {}).get("refresh_seed") or 0),
+            outfit_set=bool((rag_request.get("filters") or {}).get("outfit_set")),
+        )
+        return {
+            "items": [
+                {
+                    "item_id": item.get("item_id"),
+                    "source": item.get("source", "musinsa"),
+                    "name": item.get("name") or item.get("item_name"),
+                    "brand": item.get("brand"),
+                    "price": item.get("price"),
+                    "category": item.get("category"),
+                    "label": item.get("label"),
+                    "gender": item.get("gender"),
+                    "image_url": item.get("image_url") or self.FALLBACK_IMAGE_URL,
+                    "product_url": item.get("product_url"),
+                    "color": item.get("color"),
+                    "material": item.get("material"),
+                    "fit": item.get("fit"),
+                    "pattern": item.get("pattern"),
+                    "mood": item.get("mood"),
+                    "sense_of_season": item.get("sense_of_season"),
+                    "similarity_score": item.get("similarity_score"),
+                    "metadata_score": item.get("metadata_score"),
+                    "final_score": item.get("final_score"),
+                }
+                for item in items
+            ],
+            "message": "success" if items else "검색 결과가 없습니다.",
+        }
