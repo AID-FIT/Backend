@@ -15,9 +15,11 @@ class RecommendationCreateRequest(BaseModel):
     user_id: str | None = None
     query: str = Field(validation_alias=AliasChoices("query", "prompt"))
     image_url: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
     closet_item_id: str | None = None
     recommendation_target: str = "musinsa"
     context: dict = Field(default_factory=dict)
+    user_profile: dict = Field(default_factory=dict)
 
 
 class AgentRecommendationItem(BaseModel):

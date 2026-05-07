@@ -44,18 +44,23 @@ class AidFitAgentPipeline:
         self,
         query: str,
         image_url: str | None,
+        image_urls: list[str] | None = None,
         user_id: str | None = None,
         closet_item_id: str | None = None,
         recommendation_target: str = "musinsa",
         context: dict | None = None,
+        user_profile: dict | None = None,
     ) -> dict:
+        normalized_image_urls = image_urls or ([image_url] if image_url else [])
         state: AgentState = {
             "user_id": user_id,
             "query": query,
-            "image_url": image_url,
+            "image_url": image_url or (normalized_image_urls[0] if normalized_image_urls else None),
+            "image_urls": normalized_image_urls,
             "closet_item_id": closet_item_id,
             "recommendation_target": recommendation_target,
             "context": context or {},
+            "user_profile": user_profile or {},
             "error": None,
         }
         result = await self.graph.ainvoke(state)

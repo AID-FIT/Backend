@@ -5,9 +5,11 @@ class AgentState(TypedDict, total=False):
     user_id: str | None
     query: str
     image_url: str | None
+    image_urls: list[str]
     closet_item_id: str | None
     recommendation_target: str
     context: dict[str, Any]
+    user_profile: dict[str, Any]
     vlm_result: dict[str, Any]
     is_match: bool
     rag_query: str

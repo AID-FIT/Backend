@@ -17,7 +17,8 @@ class AgentNodes:
         self.llm_service = llm_service or LlmService()
 
     async def vlm_node(self, state: AgentState) -> AgentState:
-        result = await self.vlm_service.analyze(state["image_url"], state["query"])
+        image_urls = state.get("image_urls") or []
+        result = await self.vlm_service.analyze_many(image_urls, state["query"])
         state["vlm_result"] = result
         state["is_match"] = bool(result.get("is_match"))
         if not state["is_match"]:
@@ -27,9 +28,13 @@ class AgentNodes:
     async def rag_node(self, state: AgentState) -> AgentState:
         query = build_rag_query(state["vlm_result"], state["query"])
         context = state.get("context") or {}
+        user_profile = state.get("user_profile") or {}
         limit = int(context.get("limit") or 5)
         refresh_seed = int(context.get("refresh_seed") or 0)
         outfit_set = bool(context.get("outfit_set"))
+        if user_profile:
+            context = {**context, "user_profile": user_profile}
+            state["context"] = context
         state["rag_query"] = query
         state["rag_items"] = await self.rag_service.search(
             query,

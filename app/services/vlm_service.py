@@ -21,3 +21,14 @@ class VlmService:
             "sense of season": "spring",
             "is_match": is_match,
         }
+
+    async def analyze_many(self, image_urls: list[str], query: str) -> dict:
+        results = [await self.analyze(image_url, query) for image_url in image_urls]
+        if not results:
+            return await self.analyze(None, query)
+
+        primary = results[0]
+        primary["items"] = results
+        primary["image_urls"] = image_urls
+        primary["is_match"] = any(bool(result.get("is_match")) for result in results)
+        return primary
