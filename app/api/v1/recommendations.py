@@ -20,13 +20,16 @@ HOME_RECOMMENDATION_QUERY = (
 
 @router.post("", response_model=RecommendationResponse)
 async def create_recommendation(payload: RecommendationCreateRequest) -> RecommendationResponse:
+    image_urls = payload.image_urls or ([payload.image_url] if payload.image_url else [])
     result = await RecommendationService().create(
         query=payload.query,
-        image_url=payload.image_url,
+        image_url=payload.image_url or (image_urls[0] if image_urls else None),
         user_id=payload.user_id,
         closet_item_id=payload.closet_item_id,
         recommendation_target=payload.recommendation_target,
         context=payload.context,
+        image_urls=image_urls,
+        user_profile=payload.user_profile,
     )
     return RecommendationResponse(**result)
 
@@ -42,6 +45,25 @@ async def get_home_recommendation(
     closet_items = await ClosetService().list_for_user(db, current_user)
     sizes = preference.sizes if preference else {}
     age_range = sizes.get("age_range") if isinstance(sizes, dict) else None
+    closet_payload = [
+        {
+            "closet_item_id": item.id,
+            "category": item.category,
+            "color": item.color,
+            "material": item.material,
+            "fit": item.fit,
+            "pattern": item.pattern,
+            "mood": item.mood,
+            "sense of season": item.sense_of_season,
+        }
+        for item in closet_items
+    ]
+    user_profile = {
+        "age_group": age_range,
+        "preferred_style": preference.styles if preference else [],
+        "include_closet": True,
+        "closet_items": closet_payload,
+    }
 
     result = await RecommendationService().create(
         query=HOME_RECOMMENDATION_QUERY.format(prompt=prompt or "없음"),
@@ -55,20 +77,10 @@ async def get_home_recommendation(
             "outfit_set": True,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
-            "closet_items": [
-                {
-                    "closet_item_id": item.id,
-                    "category": item.category,
-                    "color": item.color,
-                    "material": item.material,
-                    "fit": item.fit,
-                    "pattern": item.pattern,
-                    "mood": item.mood,
-                    "sense of season": item.sense_of_season,
-                }
-                for item in closet_items
-            ],
+            "closet_items": closet_payload,
         },
+        image_urls=[item.image_url for item in closet_items if item.image_url],
+        user_profile=user_profile,
     )
     return RecommendationResponse(**result)
 
@@ -82,6 +94,8 @@ async def get_recommendation(recommendation_id: str) -> RecommendationResponse:
         closet_item_id=None,
         recommendation_target="musinsa",
         context={"recommendation_id": recommendation_id},
+        image_urls=["mock://stored-image"],
+        user_profile={},
     )
     result["request_id"] = recommendation_id
     return RecommendationResponse(**result)
