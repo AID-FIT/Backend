@@ -1,5 +1,3 @@
-from uuid import uuid4
-
 from langgraph.graph import END, StateGraph
 
 from app.agent.nodes import AgentNodes
@@ -93,13 +91,15 @@ class AidFitAgentPipeline:
     async def run(
         self,
         query: str,
-        image_url: str | None,
+        user_id: str,
         image_urls: list[str] | None = None,
-        user_id: str | None = None,
-        closet_item_id: str | None = None,
-        recommendation_target: str = "musinsa",
-        context: dict | None = None,
+        closet_items: list[dict] | None = None,
+        use_closet_style: bool = True,
         user_profile: dict | None = None,
+        context: dict | None = None,
+        recommendation_target: str = "musinsa",
+        image_url: str | None = None,
+        closet_item_id: str | None = None,
     ) -> dict:
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
         state: AgentState = {
@@ -107,16 +107,13 @@ class AidFitAgentPipeline:
             "query": query,
             "image_url": image_url or (normalized_image_urls[0] if normalized_image_urls else None),
             "image_urls": normalized_image_urls,
+            "closet_items": closet_items or [],
+            "use_closet_style": use_closet_style,
+            "user_profile": user_profile or {},
             "closet_item_id": closet_item_id,
             "recommendation_target": recommendation_target,
             "context": context or {},
-            "user_profile": user_profile or {},
             "error": None,
         }
         result = await self.graph.ainvoke(state)
-        response = result["final_response"]
-        return {
-            "request_id": f"rec_{uuid4().hex[:12]}",
-            **response,
-            "vlm_result": {"items": result.get("vlm_items", [])},
-        }
+        return result["final_response"]

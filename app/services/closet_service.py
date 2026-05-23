@@ -17,7 +17,7 @@ class ClosetService:
     ) -> ClosetItem:
         existing = await db.execute(select(ClosetItem).where(ClosetItem.image_id == image.id))
         closet_item = existing.scalar_one_or_none()
-        vlm_result = await self.vlm_service.analyze(image.storage_url, "사용자의 옷장 이미지 분석")
+        vlm_result = await self.vlm_service.analyze(image.storage_url)
 
         values = {
             "user_id": user.id,
@@ -35,8 +35,8 @@ class ClosetService:
             "fit": vlm_result.get("fit"),
             "pattern": vlm_result.get("pattern"),
             "mood": vlm_result.get("mood"),
-            "sense_of_season": vlm_result.get("sense of season"),
-            "is_match": bool(vlm_result.get("is_match")),
+            "sense_of_season": vlm_result.get("sense_of_season") or vlm_result.get("sense of season"),
+            "is_match": bool(vlm_result.get("is_match", True)),
             "raw_vlm_result": vlm_result,
         }
 

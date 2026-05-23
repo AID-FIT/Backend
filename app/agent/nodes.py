@@ -58,16 +58,14 @@ class AgentNodes:
 
     async def intent_classifier_node(self, state: AgentState) -> AgentState:
         query = state.get("query", "")
-        user_profile = state.get("user_profile") or {}
-        include_closet = bool(user_profile.get("include_closet"))
-        has_closet_items = bool(user_profile.get("closet_items"))
+        has_closet_items = bool(state.get("closet_items"))
 
         state["intent"] = "style_recommendation"
         if "무신사" in query or "구매" in query:
             state["retrieval_target"] = "musinsa"
-        elif include_closet and has_closet_items and any(keyword in query for keyword in ["옷장", "내 옷", "가지고"]):
+        elif has_closet_items and any(keyword in query for keyword in ["옷장", "내 옷", "가지고"]):
             state["retrieval_target"] = "closet"
-        elif include_closet and has_closet_items:
+        elif has_closet_items:
             state["retrieval_target"] = "hybrid"
         else:
             state["retrieval_target"] = "musinsa"
@@ -83,6 +81,8 @@ class AgentNodes:
             "query": query,
             "retrieval_target": state.get("retrieval_target", "musinsa"),
             "user_profile": state.get("user_profile") or {},
+            "closet_items": state.get("closet_items") or [],
+            "use_closet_style": state.get("use_closet_style", True),
             "items": state.get("vlm_items", []),
             "filters": {
                 "refresh_seed": context.get("refresh_seed", 0),
@@ -155,6 +155,5 @@ class AgentNodes:
             "message": error["message"],
             "recommendations": [],
             "style_guide": None,
-            "error": error,
         }
         return state
