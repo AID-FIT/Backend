@@ -18,29 +18,22 @@ HOME_RECOMMENDATION_QUERY = (
 )
 
 
-def normalize_user_profile(profile: dict) -> dict:
-    normalized = dict(profile or {})
-    if "preferred_styles" not in normalized and "preferred_style" in normalized:
-        normalized["preferred_styles"] = normalized["preferred_style"]
-    if "preferred_style" not in normalized and "preferred_styles" in normalized:
-        normalized["preferred_style"] = normalized["preferred_styles"]
-    normalized.setdefault("include_closet", False)
-    normalized.setdefault("closet_items", [])
-    return normalized
+def normalize_user_profile(profile: object | None) -> dict | None:
+    if profile is None:
+        return None
+    return profile.model_dump() if hasattr(profile, "model_dump") else dict(profile)
 
 
 @router.post("", response_model=RecommendationResponse)
 async def create_recommendation(payload: RecommendationCreateRequest) -> RecommendationResponse:
-    image_urls = payload.image_urls or ([payload.image_url] if payload.image_url else [])
+    image_urls = payload.image_urls
     user_profile = normalize_user_profile(payload.user_profile)
     result = await RecommendationService().create(
         query=payload.query,
-        image_url=payload.image_url or (image_urls[0] if image_urls else None),
         user_id=payload.user_id,
-        closet_item_id=payload.closet_item_id,
-        recommendation_target=payload.recommendation_target,
-        context=payload.context,
         image_urls=image_urls,
+        closet_items=[item.model_dump() for item in payload.closet_items],
+        use_closet_style=payload.use_closet_style,
         user_profile=user_profile,
     )
     return RecommendationResponse(**result)
@@ -66,24 +59,18 @@ async def get_home_recommendation(
             "fit": item.fit,
             "pattern": item.pattern,
             "mood": item.mood,
-            "sense of season": item.sense_of_season,
+            "sense_of_season": item.sense_of_season,
         }
         for item in closet_items
     ]
     user_profile = {
         "age_group": age_range,
         "preferred_styles": preference.styles if preference else [],
-        "preferred_style": preference.styles if preference else [],
-        "include_closet": True,
-        "closet_items": closet_payload,
     }
 
     result = await RecommendationService().create(
         query=HOME_RECOMMENDATION_QUERY.format(prompt=prompt or "없음"),
-        image_url=closet_items[0].image_url if closet_items else None,
         user_id=current_user.id,
-        closet_item_id=closet_items[0].id if closet_items else None,
-        recommendation_target="musinsa",
         context={
             "refresh_seed": max(refresh_seed, 0),
             "limit": 5,
@@ -93,6 +80,8 @@ async def get_home_recommendation(
             "closet_items": closet_payload,
         },
         image_urls=[item.image_url for item in closet_items if item.image_url],
+        closet_items=closet_payload,
+        use_closet_style=True,
         user_profile=user_profile,
     )
     return RecommendationResponse(**result)
@@ -102,13 +91,11 @@ async def get_home_recommendation(
 async def get_recommendation(recommendation_id: str) -> RecommendationResponse:
     result = await RecommendationService().create(
         query="저장된 추천 조회 mock",
-        image_url="mock://stored-image",
-        user_id=None,
-        closet_item_id=None,
-        recommendation_target="musinsa",
+        user_id="mock_user",
         context={"recommendation_id": recommendation_id},
         image_urls=["mock://stored-image"],
-        user_profile={},
+        closet_items=[],
+        use_closet_style=True,
+        user_profile=None,
     )
-    result["request_id"] = recommendation_id
     return RecommendationResponse(**result)

@@ -6,6 +6,8 @@ class AgentState(TypedDict, total=False):
     user_id: str | None
     query: str
     image_urls: list[str]
+    closet_items: list[dict[str, Any]]
+    use_closet_style: bool
     user_profile: dict[str, Any]
 
     # Backward-compatible backend/internal options

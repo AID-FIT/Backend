@@ -38,6 +38,9 @@ spec:
           envFrom:
             - secretRef:
                 name: aidfit-backend-secret
+          volumeMounts:
+            - name: uploads-storage
+              mountPath: /app/uploads
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -58,3 +61,7 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      volumes:
+        - name: uploads-storage
+          persistentVolumeClaim:
+            claimName: backend-uploads-pvc

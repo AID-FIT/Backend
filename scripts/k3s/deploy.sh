@@ -22,10 +22,10 @@ kubectl apply -f "${ROOT_DIR}/k8s/postgres-service.yaml"
 
 kubectl rollout status deployment/postgres -n "${NAMESPACE}" --timeout=2m
 
+kubectl apply -f "${ROOT_DIR}/k8s/backend-uploads-pvc.yaml"
 kubectl apply -f "${ROOT_DIR}/k8s/backend-service.yaml"
 kubectl apply -f "${ROOT_DIR}/k8s/backend-deployment.yaml"
 
 kubectl rollout status deployment/"${DEPLOYMENT_NAME}" -n "${NAMESPACE}" --timeout=3m
 kubectl get pods -n "${NAMESPACE}" -o wide
 kubectl get services -n "${NAMESPACE}"
-

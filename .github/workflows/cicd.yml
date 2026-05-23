@@ -164,6 +164,7 @@ jobs:
 
       - name: Apply Backend manifests
         run: |
+          kubectl apply -f k8s/backend-uploads-pvc.yaml
           kubectl apply -f k8s/backend-service.yaml
           kubectl apply -f k8s/backend-deployment.yaml
 
@@ -187,4 +188,3 @@ jobs:
           kubectl get deployments -n ${{ env.NAMESPACE }}
           kubectl get pods -n ${{ env.NAMESPACE }} -o wide
           kubectl get services -n ${{ env.NAMESPACE }}
-
