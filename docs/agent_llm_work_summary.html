@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AID-FIT Agent & LLM 작업 공유</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --ink: #17202a;
+      --muted: #5d6673;
+      --line: #d9dee7;
+      --accent: #0f766e;
+      --accent-soft: #e7f5f2;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --amber: #a16207;
+      --amber-soft: #fff7d6;
+      --code-bg: #101827;
+      --code-fg: #edf2f7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Arial, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      line-height: 1.65;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 42px 0 68px;
+    }
+
+    header {
+      margin-bottom: 28px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      font-size: 34px;
+    }
+
+    h2 {
+      margin-bottom: 14px;
+      font-size: 22px;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #eef2f7;
+      color: #111827;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.94em;
+    }
+
+    .lead {
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .card p {
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .badge.blue {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .step {
+      min-height: 132px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .step span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 11px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f8fafc;
+      font-weight: 800;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .code-block {
+      overflow-x: auto;
+      margin-top: 10px;
+      padding: 16px;
+      border-radius: 8px;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
+    .note {
+      margin-top: 14px;
+      padding: 13px 14px;
+      border-left: 4px solid var(--amber);
+      border-radius: 0 8px 8px 0;
+      background: var(--amber-soft);
+      color: #4b3710;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        width: min(100% - 28px, 1120px);
+      }
+
+      .grid,
+      .flow,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>AID-FIT Agent & LLM 작업 공유</h1>
+      <p class="lead">
+        이번 작업은 추천 백엔드에 LangGraph 기반 Agent 흐름을 연결하고,
+        VLM, RAG, LLM 경계를 명확한 계약으로 분리한 뒤, 최종 추천 문구 생성 단계에서 Gemini를 사용할 수 있도록 정리한 작업입니다.
+        팀원들이 전체 흐름과 파일별 역할을 빠르게 파악할 수 있도록 핵심만 요약했습니다.
+      </p>
+      <div class="meta" aria-label="작업 메타 정보">
+        <span class="pill">작성 기준: 현재 로컬 최종 수정본</span>
+        <span class="pill">문서 위치: docs/agent_llm_work_summary.html</span>
+        <span class="pill">주요 범위: Agent, VLM, RAG, LLM, 테스트</span>
+      </div>
+    </header>
+
+    <section class="grid" aria-label="작업 요약">
+      <article class="card">
+        <span class="badge">Agent</span>
+        <h3>추천 파이프라인 구성</h3>
+        <p><code>AidFitAgentPipeline</code>이 입력 검증, 이미지 분석, 의도 분류, 검색, 랭킹, 최종 응답 생성을 순서대로 실행합니다.</p>
+      </article>
+      <article class="card">
+        <span class="badge">Contracts</span>
+        <h3>AI 모듈 간 계약 추가</h3>
+        <p><code>app/schemas/ai.py</code>에 VLM, RAG, Agent error 스키마를 추가해 모듈 간 입출력 형식을 검증합니다.</p>
+      </article>
+      <article class="card">
+        <span class="badge">LLM</span>
+        <h3>Gemini 연결 준비</h3>
+        <p><code>LlmService</code>가 Gemini <code>generateContent</code>를 호출하고, 결과를 백엔드 응답 형식에 맞게 보정합니다.</p>
+      </article>
+    </section>
+
+    <section class="section">
+      <h2>한 줄 설명</h2>
+      <p>
+        사용자의 추천 요청이 들어오면 Agent가 이미지와 옷장 정보를 참고해 검색 대상을 정하고,
+        RAG 결과를 사용자 취향과 옷장 메타데이터 기준으로 재정렬한 뒤,
+        LLM이 실제 후보 상품 안에서만 자연스러운 한국어 추천 응답을 작성하도록 만들었습니다.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>요청 처리 흐름</h2>
+      <p>
+        추천 API는 기존 FastAPI 구조를 유지하고, 내부 추천 로직만 Agent 파이프라인으로 확장했습니다.
+        텍스트만 있는 요청은 VLM을 건너뛰고, 이미지가 있으면 VLM 분석 후 검색 단계로 이동합니다.
+      </p>
+      <div class="flow">
+        <div class="step">
+          <strong>1. API</strong>
+          <span><code>recommendations.py</code>에서 추천 요청을 받습니다.</span>
+        </div>
+        <div class="step">
+          <strong>2. Service</strong>
+          <span><code>RecommendationService</code>가 이미지 입력을 정규화하고 Agent를 호출합니다.</span>
+        </div>
+        <div class="step">
+          <strong>3. Context</strong>
+          <span>이미지, 옷장 아이템, 사용자 프로필 여부를 확인합니다.</span>
+        </div>
+        <div class="step">
+          <strong>4. Retrieval</strong>
+          <span>의도에 따라 <code>closet</code>, <code>musinsa</code>, <code>hybrid</code> 검색으로 라우팅합니다.</span>
+        </div>
+        <div class="step">
+          <strong>5. Ranking</strong>
+          <span>RAG 점수에 취향, 옷장 매칭, 쿼리 관련성 보너스를 반영합니다.</span>
+        </div>
+        <div class="step">
+          <strong>6. LLM</strong>
+          <span>후보 상품만 기반으로 최종 추천 사유와 스타일 가이드를 생성합니다.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>핵심 변경 파일</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>파일</th>
+            <th>팀원에게 설명할 내용</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>app/agent/agent_pipeline.py</code></td>
+            <td>LangGraph 상태 머신을 정의합니다. 입력 검증 후 이미지가 있으면 VLM으로, 없으면 바로 의도 분류로 이동하도록 흐름을 정리했습니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/agent/nodes.py</code></td>
+            <td>각 Agent 노드의 실제 동작을 담당합니다. 입력 검증, VLM/RAG 호출, 검색 fallback, 랭킹, LLM 최종 응답, 에러 응답을 처리합니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/agent/state.py</code></td>
+            <td>Agent가 단계별로 들고 다니는 상태 값을 정의합니다. 이미지, 옷장, RAG 결과, 랭킹 결과, 에러 상태를 한 곳에서 관리합니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/schemas/ai.py</code></td>
+            <td>VLM 요청/응답, RAG 요청/응답, Agent error 계약을 Pydantic 스키마로 추가했습니다. 외부 AI 모듈 연결 시 이 형식을 맞추면 됩니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/services/llm_service.py</code></td>
+            <td>Mock LLM과 Gemini LLM을 같은 public contract로 감쌉니다. Gemini 응답이 후보 상품 밖의 값을 만들면 필터링해 안정성을 높였습니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/services/rag_service.py</code></td>
+            <td>현재는 mock catalog를 사용하지만, <code>search_request()</code> 경계를 통해 추후 실제 vector search API로 교체하기 쉽게 만들었습니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/services/vlm_service.py</code></td>
+            <td>단일 이미지 API와 다중 이미지 API를 모두 지원합니다. 현재는 mock 분석이며, 추후 실제 vision API adapter만 교체하면 됩니다.</td>
+          </tr>
+          <tr>
+            <td><code>app/core/config.py</code>, <code>.env.example</code></td>
+            <td>Gemini API key, model, base URL, timeout 설정을 추가했습니다. <code>USE_MOCK_AI</code>로 mock과 실제 호출을 전환합니다.</td>
+          </tr>
+          <tr>
+            <td><code>scripts/run_llm_only.py</code></td>
+            <td>서버, VLM, RAG 없이 LLM 최종 응답 생성 단계만 단독으로 확인할 수 있는 로컬 실행 스크립트입니다.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>팀별 연동 포인트</h2>
+      <div class="two-col">
+        <article class="card">
+          <span class="badge blue">VLM 팀</span>
+          <h3>교체해야 할 위치</h3>
+          <p><code>VlmService._external_analyze_many()</code> 내부를 실제 이미지 분석 API 호출로 바꾸면 됩니다.</p>
+          <ul>
+            <li>입력: <code>image_urls: list[str]</code></li>
+            <li>출력: <code>VLMResponse</code> 형식</li>
+            <li>중요 필드: category, color, material, fit, mood, sense_of_season</li>
+          </ul>
+        </article>
+        <article class="card">
+          <span class="badge blue">RAG 팀</span>
+          <h3>교체해야 할 위치</h3>
+          <p><code>RagService._external_search_request()</code> 내부를 실제 검색 API 또는 vector DB 호출로 바꾸면 됩니다.</p>
+          <ul>
+            <li>입력: <code>RAGRequest</code> 형식</li>
+            <li>출력: <code>RAGResponse</code> 형식</li>
+            <li>Musinsa 상품은 <code>product_url</code>이 필수입니다.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>검색 대상 결정 규칙</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>상황</th>
+            <th>검색 대상</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>사용자가 "내 옷장", "가진 옷", "closet"처럼 옷장만 요구</td>
+            <td><code>closet</code></td>
+          </tr>
+          <tr>
+            <td>사용자가 "무신사", "구매", "상품", "buy"처럼 구매 상품을 요구</td>
+            <td><code>musinsa</code></td>
+          </tr>
+          <tr>
+            <td>옷장 아이템이 함께 전달됨</td>
+            <td><code>hybrid</code></td>
+          </tr>
+          <tr>
+            <td>사용자 프로필이 있고 <code>use_closet_style=true</code></td>
+            <td><code>hybrid</code></td>
+          </tr>
+          <tr>
+            <td>그 외 텍스트 추천 요청</td>
+            <td><code>musinsa</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>LLM 안정성 처리</h2>
+      <p>
+        LLM은 문장을 자연스럽게 만드는 역할만 맡고, 상품 데이터의 사실성은 백엔드가 다시 보장하도록 했습니다.
+        즉, Gemini가 상품명이나 URL을 잘못 만들더라도 최종 응답은 RAG 후보 상품 기준으로 보정됩니다.
+      </p>
+      <ul>
+        <li>Gemini에는 최대 8개 후보만 전달해 prompt 크기를 제한합니다.</li>
+        <li><code>responseMimeType: application/json</code>과 <code>responseSchema</code>로 JSON 출력을 요구합니다.</li>
+        <li><code>_normalize_llm_response()</code>가 LLM 추천을 후보 상품 ID 또는 이미지 URL로 다시 매칭합니다.</li>
+        <li>후보에 없는 상품을 추천하면 제거하고, 남는 추천이 없으면 <code>empty</code> 응답으로 처리합니다.</li>
+        <li>최종 응답은 <code>AgentResponse</code>로 다시 검증합니다.</li>
+      </ul>
+      <div class="code-block">Gemini raw JSON
+  -> JSON parse
+  -> candidate_items 기준 재매칭
+  -> AgentResponse 검증
+  -> RecommendationResponse HTTP body</div>
+    </section>
+
+    <section class="section">
+      <h2>환경 변수</h2>
+      <p>
+        기본값은 mock AI입니다. 실제 Gemini 호출을 확인하려면 로컬 <code>.env</code>에서 아래 값을 설정합니다.
+      </p>
+      <div class="code-block">USE_MOCK_AI=false
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+GEMINI_TIMEOUT_SECONDS=30</div>
+      <p class="note">
+        실제 모델명은 <code>app/core/config.py</code>와 <code>.env.example</code> 값이 일치해야 합니다.
+        모델명이 잘못되면 Gemini 호출에서 404 또는 model not found 오류가 날 수 있습니다.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>로컬 실행 방법</h2>
+      <p>LLM 단계만 빠르게 확인할 때:</p>
+      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" scripts\run_llm_only.py</div>
+      <p>네트워크 없이 mock LLM으로 확인할 때:</p>
+      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" scripts\run_llm_only.py --mock</div>
+      <p>백엔드 API 전체 흐름으로 확인할 때:</p>
+      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000</div>
+    </section>
+
+    <section class="section">
+      <h2>검증 항목</h2>
+      <p>이번 작업에서 추가된 테스트는 Agent 라우팅, fallback, ranking, AI contract, Gemini adapter를 중심으로 구성했습니다.</p>
+      <ul>
+        <li><code>tests/test_agent_pipeline.py</code>: 텍스트/이미지 요청, closet/musinsa/hybrid 라우팅, fallback, 랭킹, 에러 응답 검증</li>
+        <li><code>tests/test_ai_contracts.py</code>: VLM/RAG/error 스키마 계약 검증</li>
+        <li><code>tests/test_llm_service.py</code>: Gemini 요청 payload와 후보 상품 보정 로직 검증</li>
+      </ul>
+      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" -m pytest tests\test_agent_pipeline.py tests\test_llm_service.py tests\test_ai_contracts.py</div>
+    </section>
+  </main>
+</body>
+</html>

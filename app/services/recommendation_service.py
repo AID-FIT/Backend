@@ -18,6 +18,7 @@ class RecommendationService:
         image_url: str | None = None,
         closet_item_id: str | None = None,
     ) -> dict:
+        # Centralize image normalization before entering the LangGraph pipeline.
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
         return await self.pipeline.run(
             query=query,

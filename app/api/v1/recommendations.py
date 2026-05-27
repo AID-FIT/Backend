@@ -19,6 +19,7 @@ HOME_RECOMMENDATION_QUERY = (
 
 
 def normalize_user_profile(profile: object | None) -> dict | None:
+    # Support both Pydantic models and plain dict-like profiles.
     if profile is None:
         return None
     return profile.model_dump() if hasattr(profile, "model_dump") else dict(profile)
@@ -46,6 +47,7 @@ async def get_home_recommendation(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RecommendationResponse:
+    # Home cards reuse closet metadata and preference data as agent context.
     preference = await UserService().get_preference(db, current_user)
     closet_items = await ClosetService().list_for_user(db, current_user)
     sizes = preference.sizes if preference else {}

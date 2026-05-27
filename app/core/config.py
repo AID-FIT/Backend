@@ -22,6 +22,10 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
     use_mock_ai: bool = True
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_timeout_seconds: float = 30.0
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False
