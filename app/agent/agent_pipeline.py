@@ -5,10 +5,10 @@ from app.agent.state import AgentState
 
 
 def route_after_validation(state: AgentState) -> str:
-    return "error" if state.get("error") else "image_check"
+    return "error" if state.get("error") else "context_check"
 
 
-def route_after_image_check(state: AgentState) -> str:
+def route_after_context_check(state: AgentState) -> str:
     return "vlm" if state.get("has_image") else "intent"
 
 
@@ -22,10 +22,19 @@ def retrieval_router(state: AgentState) -> str:
 
 
 def route_after_rag_result_check(state: AgentState) -> str:
-    return "style_ranker" if state.get("has_rag_result") else "fallback_search"
+    if state.get("error"):
+        return "error"
+    if state.get("has_rag_result"):
+        return "style_ranker"
+    # Stop after one relaxed retry to avoid looping on empty searches.
+    if int(state.get("fallback_count") or 0) >= 1:
+        return "final_response"
+    return "fallback_search"
 
 
 def route_after_fallback(state: AgentState) -> str:
+    if state.get("error"):
+        return "error"
     return "style_ranker" if state.get("has_rag_result") else "final_response"
 
 
@@ -35,9 +44,10 @@ class AidFitAgentPipeline:
         self.graph = self._compile()
 
     def _compile(self):
+        # Build the recommendation workflow as an explicit state machine.
         graph = StateGraph(AgentState)
         graph.add_node("input_validation", self.nodes.input_validation_node)
-        graph.add_node("image_check", self.nodes.image_check_node)
+        graph.add_node("context_check", self.nodes.context_check_node)
         graph.add_node("vlm", self.nodes.vlm_node)
         graph.add_node("fashion_item_check", self.nodes.fashion_item_check_node)
         graph.add_node("intent_classifier", self.nodes.intent_classifier_node)
@@ -55,9 +65,13 @@ class AidFitAgentPipeline:
         graph.add_conditional_edges(
             "input_validation",
             route_after_validation,
-            {"image_check": "image_check", "error": "error_response"},
+            {"context_check": "context_check", "error": "error_response"},
         )
-        graph.add_conditional_edges("image_check", route_after_image_check, {"vlm": "vlm", "intent": "intent_classifier"})
+        graph.add_conditional_edges(
+            "context_check",
+            route_after_context_check,
+            {"vlm": "vlm", "intent": "intent_classifier"},
+        )
         graph.add_edge("vlm", "fashion_item_check")
         graph.add_conditional_edges(
             "fashion_item_check",
@@ -76,12 +90,17 @@ class AidFitAgentPipeline:
         graph.add_conditional_edges(
             "rag_result_check",
             route_after_rag_result_check,
-            {"style_ranker": "style_ranker", "fallback_search": "fallback_search"},
+            {
+                "style_ranker": "style_ranker",
+                "fallback_search": "fallback_search",
+                "final_response": "final_response",
+                "error": "error_response",
+            },
         )
         graph.add_conditional_edges(
             "fallback_search",
             route_after_fallback,
-            {"style_ranker": "style_ranker", "final_response": "final_response"},
+            {"style_ranker": "style_ranker", "final_response": "final_response", "error": "error_response"},
         )
         graph.add_edge("style_ranker", "final_response")
         graph.add_edge("final_response", END)
@@ -101,6 +120,7 @@ class AidFitAgentPipeline:
         image_url: str | None = None,
         closet_item_id: str | None = None,
     ) -> dict:
+        # Keep old single-image callers compatible with the new multi-image path.
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
         state: AgentState = {
             "user_id": user_id,
@@ -113,6 +133,10 @@ class AidFitAgentPipeline:
             "closet_item_id": closet_item_id,
             "recommendation_target": recommendation_target,
             "context": context or {},
+            "vlm_items": [],
+            "rag_results": [],
+            "ranked_items": [],
+            "fallback_count": 0,
             "error": None,
         }
         result = await self.graph.ainvoke(state)
