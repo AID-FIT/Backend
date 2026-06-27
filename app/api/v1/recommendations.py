@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -26,13 +26,18 @@ def normalize_user_profile(profile: object | None) -> dict | None:
 
 
 @router.post("", response_model=RecommendationResponse)
-async def create_recommendation(payload: RecommendationCreateRequest) -> RecommendationResponse:
-    image_urls = payload.image_urls
+async def create_recommendation(
+    payload: RecommendationCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RecommendationResponse:
+    # 인증된 사용자 본인의 id만 신뢰한다(payload.user_id는 무시).
     user_profile = normalize_user_profile(payload.user_profile)
-    result = await RecommendationService().create(
+    result = await RecommendationService().create_and_persist(
+        db=db,
+        user_id=current_user.id,
         query=payload.query,
-        user_id=payload.user_id,
-        image_urls=image_urls,
+        image_urls=payload.image_urls,
         closet_items=[item.model_dump() for item in payload.closet_items],
         use_closet_style=payload.use_closet_style,
         user_profile=user_profile,
@@ -76,7 +81,6 @@ async def get_home_recommendation(
         context={
             "refresh_seed": max(refresh_seed, 0),
             "limit": 5,
-            "outfit_set": True,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
             "closet_items": closet_payload,
@@ -90,14 +94,12 @@ async def get_home_recommendation(
 
 
 @router.get("/{recommendation_id}", response_model=RecommendationResponse)
-async def get_recommendation(recommendation_id: str) -> RecommendationResponse:
-    result = await RecommendationService().create(
-        query="저장된 추천 조회 mock",
-        user_id="mock_user",
-        context={"recommendation_id": recommendation_id},
-        image_urls=["mock://stored-image"],
-        closet_items=[],
-        use_closet_style=True,
-        user_profile=None,
-    )
+async def get_recommendation(
+    recommendation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RecommendationResponse:
+    result = await RecommendationService().get_by_id(db, recommendation_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
     return RecommendationResponse(**result)

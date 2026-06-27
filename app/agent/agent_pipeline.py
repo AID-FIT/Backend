@@ -119,6 +119,7 @@ class AidFitAgentPipeline:
         recommendation_target: str = "musinsa",
         image_url: str | None = None,
         closet_item_id: str | None = None,
+        return_trace: bool = False,
     ) -> dict:
         # Keep old single-image callers compatible with the new multi-image path.
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
@@ -140,4 +141,14 @@ class AidFitAgentPipeline:
             "error": None,
         }
         result = await self.graph.ainvoke(state)
+        if return_trace:
+            return {
+                "response": result["final_response"],
+                "vlm_items": result.get("vlm_items", []),
+                "ranked_items": result.get("ranked_items", []),
+                "rag_items": result.get("rag_results", []),
+                "retrieval_target": result.get("retrieval_target", recommendation_target),
+                "intent": result.get("intent"),
+                "error": result.get("error"),
+            }
         return result["final_response"]

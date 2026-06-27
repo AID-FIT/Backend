@@ -22,7 +22,6 @@ class RagService:
             request.query,
             limit=request.top_k,
             refresh_seed=int(request.filters.get("refresh_seed") or 0),
-            outfit_set=bool(request.filters.get("outfit_set")),
         )
         return {
             "items": [self._normalize_item(item) for item in items],
@@ -38,22 +37,10 @@ class RagService:
         query: str,
         limit: int = 5,
         refresh_seed: int = 0,
-        outfit_set: bool = False,
     ) -> list[dict]:
         catalog = self._mock_catalog()
         if not catalog or limit <= 0:
             return []
-
-        # Home recommendations use fixed outfit bundles for stable refresh behavior.
-        if outfit_set:
-            outfit_sets = [
-                ["6107195", "6129443", "6081171", "6103287", "6084669"],
-                ["6107195", "6108783", "6102395", "6086792", "6109669"],
-                ["6107195", "6125368", "6075610", "6103287", "6125389"],
-            ]
-            catalog_by_id = {item["item_id"]: item for item in catalog}
-            selected_ids = outfit_sets[max(refresh_seed, 0) % len(outfit_sets)]
-            return [catalog_by_id[item_id] for item_id in selected_ids if item_id in catalog_by_id][:limit]
 
         start = (max(refresh_seed, 0) * limit) % len(catalog)
         return [catalog[(start + offset) % len(catalog)] for offset in range(min(limit, len(catalog)))]

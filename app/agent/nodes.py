@@ -189,7 +189,6 @@ class AgentNodes:
         # Explicit context filters win over profile or image-inferred defaults.
         filters = {
             "refresh_seed": context.get("refresh_seed", 0),
-            "outfit_set": context.get("outfit_set", False),
         }
         for key in (
             "price_min",
