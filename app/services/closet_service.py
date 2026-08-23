@@ -9,15 +9,56 @@ class ClosetService:
     def __init__(self, vlm_service: VlmService | None = None) -> None:
         self.vlm_service = vlm_service or VlmService()
 
+    async def reuse_analysis(
+        self,
+        db: AsyncSession,
+        user: User,
+        image: ImageAsset,
+    ) -> ClosetItem | None:
+        """같은 내용의 사진이 이미 분석돼 있으면 결과를 복사한다. 없으면 None.
+
+        저장 경로가 내용 해시라 URL이 같으면 픽셀이 같다. 같은 사진을 다시
+        분석해도 결과가 달라질 이유가 없어 VLM 호출을 건너뛴다.
+        """
+        analyzed = await db.execute(
+            select(ClosetItem)
+            .join(ImageAsset, ClosetItem.image_id == ImageAsset.id)
+            .where(
+                ImageAsset.storage_url == image.storage_url,
+                ClosetItem.image_id != image.id,
+            )
+            .limit(1)
+        )
+        source = analyzed.scalar_one_or_none()
+        if source is None:
+            return None
+
+        return await self._upsert(db, user, image, dict(source.raw_vlm_result or {}))
+
+    async def has_analysis(self, db: AsyncSession, image: ImageAsset) -> bool:
+        result = await db.execute(
+            select(ClosetItem.id).where(ClosetItem.image_id == image.id).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def analyze_and_store(
         self,
         db: AsyncSession,
         user: User,
         image: ImageAsset,
     ) -> ClosetItem:
+        vlm_result = await self.vlm_service.analyze(image.storage_url)
+        return await self._upsert(db, user, image, vlm_result)
+
+    async def _upsert(
+        self,
+        db: AsyncSession,
+        user: User,
+        image: ImageAsset,
+        vlm_result: dict,
+    ) -> ClosetItem:
         existing = await db.execute(select(ClosetItem).where(ClosetItem.image_id == image.id))
         closet_item = existing.scalar_one_or_none()
-        vlm_result = await self.vlm_service.analyze(image.storage_url)
 
         values = {
             "user_id": user.id,

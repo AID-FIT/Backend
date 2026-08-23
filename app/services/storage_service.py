@@ -36,6 +36,31 @@ class StorageService:
             "content_hash": content_hash,
         }
 
+    async def delete_by_url(self, image_url: str) -> None:
+        """저장된 객체를 지운다. 이미 없으면 조용히 지나간다."""
+        file_name = image_url.rstrip("/").rsplit("/", 1)[-1]
+        if not file_name:
+            return
+
+        if not settings.supabase_storage_enabled:
+            target = settings.upload_dir / file_name
+            target.unlink(missing_ok=True)
+            return
+
+        base_url = settings.supabase_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=settings.supabase_timeout_seconds) as client:
+                await client.delete(
+                    f"{base_url}/storage/v1/object/{settings.supabase_storage_bucket}/{file_name}",
+                    headers={
+                        "apikey": settings.supabase_service_key,
+                        "Authorization": f"Bearer {settings.supabase_service_key}",
+                    },
+                )
+        except httpx.HTTPError:
+            # 원본 삭제 실패로 사용자의 삭제 요청 자체를 실패시키지는 않는다.
+            return
+
     async def _store_in_supabase(self, file_name: str, content: bytes, content_type: str) -> str:
         base_url = settings.supabase_url.rstrip("/")
         bucket = settings.supabase_storage_bucket

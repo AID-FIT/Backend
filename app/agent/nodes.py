@@ -380,16 +380,27 @@ class AgentNodes:
         if preferred_styles and "preferred_styles" not in filters:
             filters["preferred_styles"] = preferred_styles
 
+        for key, value in self._inferred_vlm_filters(vlm_items).items():
+            if value and key not in filters:
+                filters[key] = value
+        return filters
+
+    def _inferred_vlm_filters(self, vlm_items: list[dict]) -> dict[str, Any]:
+        # An outfit photo carries several garments, so no single one may narrow the search.
+        if len(vlm_items) > 1:
+            return {"sense_of_season": self._unanimous_value(vlm_items, "sense_of_season")}
+
         first_vlm_item = vlm_items[0] if vlm_items else {}
-        inferred_filters = {
+        return {
             "sense_of_season": first_vlm_item.get("sense_of_season"),
             "category": first_vlm_item.get("category"),
             "color": first_vlm_item.get("color"),
         }
-        for key, value in inferred_filters.items():
-            if value and key not in filters:
-                filters[key] = value
-        return filters
+
+    def _unanimous_value(self, vlm_items: list[dict], key: str) -> Any:
+        values = {_term(item.get(key)) for item in vlm_items}
+        values.discard("")
+        return values.pop() if len(values) == 1 else None
 
     async def closet_rag_node(self, state: AgentState) -> AgentState:
         return await self._run_rag(state, "closet")
