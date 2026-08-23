@@ -1,11 +1,11 @@
 import json
-import re
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
 from app.schemas.recommendation import AgentResponse
+from app.services.gemini_client import extract_text, parse_json_object
 
 
 MAX_LLM_CANDIDATES = 8
@@ -260,31 +260,10 @@ class LlmService:
         }
 
     def _extract_gemini_text(self, response: dict[str, Any]) -> str:
-        # Gemini wraps generated text inside candidate content parts.
-        candidates = response.get("candidates") or []
-        if not candidates:
-            raise RuntimeError("Gemini returned no candidates")
-
-        parts = ((candidates[0].get("content") or {}).get("parts")) or []
-        text_parts = [part.get("text", "") for part in parts if part.get("text")]
-        content = "".join(text_parts).strip()
-        if not content:
-            raise RuntimeError("Gemini returned empty content")
-        return content
+        return extract_text(response)
 
     def _parse_json_object(self, content: str) -> dict[str, Any]:
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            # Be tolerant of providers that wrap JSON with extra text.
-            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-            if not match:
-                raise
-            parsed = json.loads(match.group(0))
-
-        if not isinstance(parsed, dict):
-            raise ValueError("Gemini response must be a JSON object")
-        return parsed
+        return parse_json_object(content)
 
     def _normalize_llm_response(self, response: dict[str, Any], candidate_items: list[dict[str, Any]]) -> dict[str, Any]:
         candidates_by_id = {
