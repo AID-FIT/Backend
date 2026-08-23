@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AID-FIT Agent & LLM 작업 공유</title>
+  <title>AID-FIT Agent 구현 흐름 정리</title>
   <style>
     :root {
       --bg: #f6f7f9;
@@ -21,9 +21,7 @@
       --code-fg: #edf2f7;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -45,32 +43,16 @@
       border-bottom: 1px solid var(--line);
     }
 
-    h1,
-    h2,
-    h3 {
+    h1, h2, h3 {
       margin: 0;
       line-height: 1.25;
       letter-spacing: 0;
     }
 
-    h1 {
-      margin-bottom: 10px;
-      font-size: 34px;
-    }
-
-    h2 {
-      margin-bottom: 14px;
-      font-size: 22px;
-    }
-
-    h3 {
-      margin-bottom: 8px;
-      font-size: 16px;
-    }
-
-    p {
-      margin: 0 0 12px;
-    }
+    h1 { margin-bottom: 10px; font-size: 34px; }
+    h2 { margin-bottom: 14px; font-size: 22px; }
+    h3 { margin-bottom: 8px; font-size: 16px; }
+    p { margin: 0 0 12px; }
 
     code {
       padding: 2px 5px;
@@ -82,12 +64,12 @@
     }
 
     .lead {
-      max-width: 900px;
+      max-width: 930px;
       color: var(--muted);
       font-size: 17px;
     }
 
-    .meta {
+    .meta, .tags {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
@@ -117,7 +99,13 @@
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 14px;
     }
 
@@ -128,10 +116,7 @@
       background: #fff;
     }
 
-    .card p {
-      margin-bottom: 0;
-      color: var(--muted);
-    }
+    .card p { margin-bottom: 0; color: var(--muted); }
 
     .badge {
       display: inline-block;
@@ -144,36 +129,25 @@
       font-weight: 800;
     }
 
-    .badge.blue {
-      background: var(--blue-soft);
-      color: var(--blue);
-    }
+    .badge.blue { background: var(--blue-soft); color: var(--blue); }
 
     .flow {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 10px;
       margin-top: 16px;
     }
 
     .step {
-      min-height: 132px;
+      min-height: 136px;
       padding: 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fbfcff;
     }
 
-    .step strong {
-      display: block;
-      margin-bottom: 6px;
-    }
-
-    .step span {
-      display: block;
-      color: var(--muted);
-      font-size: 14px;
-    }
+    .step strong { display: block; margin-bottom: 6px; }
+    .step span { display: block; color: var(--muted); font-size: 14px; }
 
     table {
       width: 100%;
@@ -182,27 +156,16 @@
       font-size: 14px;
     }
 
-    th,
-    td {
+    th, td {
       padding: 11px 10px;
       border-bottom: 1px solid var(--line);
       text-align: left;
       vertical-align: top;
     }
 
-    th {
-      background: #f8fafc;
-      font-weight: 800;
-    }
-
-    ul {
-      margin: 8px 0 0;
-      padding-left: 20px;
-    }
-
-    li {
-      margin: 6px 0;
-    }
+    th { background: #f8fafc; font-weight: 800; }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    li { margin: 6px 0; }
 
     .code-block {
       overflow-x: auto;
@@ -226,271 +189,469 @@
       color: #4b3710;
     }
 
-    .two-col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-
     @media (max-width: 980px) {
-      main {
-        width: min(100% - 28px, 1120px);
-      }
-
-      .grid,
-      .flow,
-      .two-col {
-        grid-template-columns: 1fr;
-      }
-
-      h1 {
-        font-size: 28px;
-      }
+      main { width: min(100% - 28px, 1120px); }
+      .grid, .flow, .two-col { grid-template-columns: 1fr; }
+      h1 { font-size: 28px; }
     }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>AID-FIT Agent & LLM 작업 공유</h1>
+      <h1>AID-FIT Agent 구현 흐름 정리</h1>
       <p class="lead">
-        이번 작업은 추천 백엔드에 LangGraph 기반 Agent 흐름을 연결하고,
-        VLM, RAG, LLM 경계를 명확한 계약으로 분리한 뒤, 최종 추천 문구 생성 단계에서 Gemini를 사용할 수 있도록 정리한 작업입니다.
-        팀원들이 전체 흐름과 파일별 역할을 빠르게 파악할 수 있도록 핵심만 요약했습니다.
+        이 문서는 AID-FIT 추천 시스템을 Agent 관점에서 설명합니다. Agent는 화면이나 검색 엔진 자체가 아니라,
+        사용자 입력, 이미지 분석, 옷장 컨텍스트, RAG 검색 결과, LLM 응답 생성을 하나의 추천 의사결정 흐름으로 묶는 조율자입니다.
       </p>
-      <div class="meta" aria-label="작업 메타 정보">
-        <span class="pill">작성 기준: 현재 로컬 최종 수정본</span>
+      <div class="meta" aria-label="문서 메타 정보">
         <span class="pill">문서 위치: docs/agent_llm_work_summary.html</span>
-        <span class="pill">주요 범위: Agent, VLM, RAG, LLM, 테스트</span>
+        <span class="pill">구현 기준: 현재 Backend 코드</span>
+        <span class="pill">최신화: 2026-08-23</span>
+        <span class="pill">핵심 관점: LangGraph Agent, 계약, 상태, 라우팅</span>
       </div>
     </header>
 
-    <section class="grid" aria-label="작업 요약">
+    <section class="grid" aria-label="모듈 역할">
+      <article class="card">
+        <span class="badge">Full-stack</span>
+        <h3>입구와 출구</h3>
+        <p>사용자 요청을 받고, 이미지 URL과 옷장 아이템을 정규화한 뒤 Agent 응답을 화면에 표시할 수 있는 형태로 받습니다.</p>
+      </article>
+      <article class="card">
+        <span class="badge">VLM</span>
+        <h3>이미지 해석</h3>
+        <p>패션 서비스 요청에 이미지가 있으면 색상, 소재, 핏, 패턴, 무드, 계절감 같은 패션 속성을 추출합니다.</p>
+      </article>
+      <article class="card">
+        <span class="badge">RAG</span>
+        <h3>후보 검색</h3>
+        <p>Agent가 만든 검색 요청에 따라 사용자 옷장, 무신사 상품, 또는 둘을 합친 후보 리스트를 반환합니다.</p>
+      </article>
       <article class="card">
         <span class="badge">Agent</span>
-        <h3>추천 파이프라인 구성</h3>
-        <p><code>AidFitAgentPipeline</code>이 입력 검증, 이미지 분석, 의도 분류, 검색, 랭킹, 최종 응답 생성을 순서대로 실행합니다.</p>
-      </article>
-      <article class="card">
-        <span class="badge">Contracts</span>
-        <h3>AI 모듈 간 계약 추가</h3>
-        <p><code>app/schemas/ai.py</code>에 VLM, RAG, Agent error 스키마를 추가해 모듈 간 입출력 형식을 검증합니다.</p>
-      </article>
-      <article class="card">
-        <span class="badge">LLM</span>
-        <h3>Gemini 연결 준비</h3>
-        <p><code>LlmService</code>가 Gemini <code>generateContent</code>를 호출하고, 결과를 백엔드 응답 형식에 맞게 보정합니다.</p>
+        <h3>흐름 제어</h3>
+        <p>LLM의 구조화 판단을 검증해 일반 대화와 패션 서비스를 나누고, 기존 검색 결과 재사용 또는 새 검색 경로를 선택합니다.</p>
       </article>
     </section>
 
     <section class="section">
-      <h2>한 줄 설명</h2>
+      <h2>Agent가 하는 일</h2>
       <p>
-        사용자의 추천 요청이 들어오면 Agent가 이미지와 옷장 정보를 참고해 검색 대상을 정하고,
-        RAG 결과를 사용자 취향과 옷장 메타데이터 기준으로 재정렬한 뒤,
-        LLM이 실제 후보 상품 안에서만 자연스러운 한국어 추천 응답을 작성하도록 만들었습니다.
+        현재 구현의 중심은 <code>AidFitAgentPipeline</code>입니다. 이 파이프라인은 LangGraph 상태 머신으로 구성되어 있으며,
+        각 노드는 전체 데이터를 직접 새로 만들기보다 필요한 상태만 읽고 다음 단계에 필요한 상태를 채웁니다.
+      </p>
+      <div class="tags" aria-label="Agent 책임">
+        <span class="pill">입력 검증</span>
+        <span class="pill">LLM 의도 분류</span>
+        <span class="pill">이미지 존재 여부 판단</span>
+        <span class="pill">VLM 호출 여부 결정</span>
+        <span class="pill">LLM 질의 정제</span>
+        <span class="pill">LLM 검색 계획</span>
+        <span class="pill">이전 RAG 재사용</span>
+        <span class="pill">RAG 요청 조립</span>
+        <span class="pill">fallback 검색 제어</span>
+        <span class="pill">스타일 랭킹</span>
+        <span class="pill">LLM 최종 응답 검증</span>
+      </div>
+      <p class="note">
+        중요한 점은 Frontend가 <code>closet</code>, <code>musinsa</code>, <code>hybrid</code>를 직접 고르는 구조가 아니라는 것입니다.
+        운영 모드에서는 LLM이 사용자 문장, 대화 내역, 이미지 분석 결과, 옷장 아이템, <code>use_closet_style</code>, 사용자 프로필을 보고
+        검색 대상과 이전 결과 재사용 여부를 구조화된 JSON으로 결정합니다.
       </p>
     </section>
 
     <section class="section">
-      <h2>요청 처리 흐름</h2>
+      <h2>전체 처리 흐름</h2>
       <p>
-        추천 API는 기존 FastAPI 구조를 유지하고, 내부 추천 로직만 Agent 파이프라인으로 확장했습니다.
-        텍스트만 있는 요청은 VLM을 건너뛰고, 이미지가 있으면 VLM 분석 후 검색 단계로 이동합니다.
+        요청은 FastAPI 서비스 계층을 지나 Agent로 들어갑니다. LLM이 먼저 일반 대화와 패션 서비스 요청을 분류합니다.
+        일반 대화는 검색 없이 답변하고, 패션 서비스 요청만 이미지 분석·질의 정제·검색 계획·RAG 단계로 넘어갑니다.
       </p>
       <div class="flow">
-        <div class="step">
-          <strong>1. API</strong>
-          <span><code>recommendations.py</code>에서 추천 요청을 받습니다.</span>
-        </div>
-        <div class="step">
-          <strong>2. Service</strong>
-          <span><code>RecommendationService</code>가 이미지 입력을 정규화하고 Agent를 호출합니다.</span>
-        </div>
-        <div class="step">
-          <strong>3. Context</strong>
-          <span>이미지, 옷장 아이템, 사용자 프로필 여부를 확인합니다.</span>
-        </div>
-        <div class="step">
-          <strong>4. Retrieval</strong>
-          <span>의도에 따라 <code>closet</code>, <code>musinsa</code>, <code>hybrid</code> 검색으로 라우팅합니다.</span>
-        </div>
-        <div class="step">
-          <strong>5. Ranking</strong>
-          <span>RAG 점수에 취향, 옷장 매칭, 쿼리 관련성 보너스를 반영합니다.</span>
-        </div>
-        <div class="step">
-          <strong>6. LLM</strong>
-          <span>후보 상품만 기반으로 최종 추천 사유와 스타일 가이드를 생성합니다.</span>
-        </div>
+        <div class="step"><strong>1. 입력</strong><span><code>query</code>, <code>image_urls</code>, <code>closet_items</code>, <code>user_profile</code>을 받습니다.</span></div>
+        <div class="step"><strong>2. 검증</strong><span>입력과 대화 내역을 검증하고 이미지·옷장 존재 여부를 계산합니다.</span></div>
+        <div class="step"><strong>3. 의도 분류</strong><span>LLM이 <code>general_chat</code> 또는 <code>fashion_service</code>를 반환합니다.</span></div>
+        <div class="step"><strong>4. 일반/VLM</strong><span>일반 대화는 바로 답변합니다. 패션 요청에 이미지가 있으면 VLM을 실행합니다.</span></div>
+        <div class="step"><strong>5. 질의 정제</strong><span>LLM이 현재 질문, 최근 대화, VLM 결과를 독립적인 검색 문장으로 합칩니다.</span></div>
+        <div class="step"><strong>6. 검색 계획</strong><span>LLM이 이전 RAG 재사용 또는 <code>closet</code>/<code>musinsa</code>/<code>hybrid</code> 새 검색을 결정합니다.</span></div>
+        <div class="step"><strong>7. 응답</strong><span>LLM이 후보 상품 안에서만 추천 문장과 스타일 가이드를 생성하고, Agent 계약으로 검증합니다.</span></div>
       </div>
+      <div class="code-block">input_validation
+  -&gt; context_check
+  -&gt; intent_classifier
+      ├─ general_chat -&gt; general_chat_response -&gt; END
+      └─ fashion_service
+          -&gt; image 있음? vlm -&gt; fashion_item_check : VLM 생략
+          -&gt; query_refiner
+          -&gt; retrieval_planner
+              ├─ reuse -&gt; reuse_rag_results -&gt; style_ranker
+              └─ retrieve -&gt; build_rag_request
+                  -&gt; closet_rag | musinsa_rag | hybrid_rag
+                  -&gt; rag_result_check -&gt; fallback_search(최대 1회)
+          -&gt; final_response -&gt; END</div>
     </section>
 
     <section class="section">
-      <h2>핵심 변경 파일</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>파일</th>
-            <th>팀원에게 설명할 내용</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>app/agent/agent_pipeline.py</code></td>
-            <td>LangGraph 상태 머신을 정의합니다. 입력 검증 후 이미지가 있으면 VLM으로, 없으면 바로 의도 분류로 이동하도록 흐름을 정리했습니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/agent/nodes.py</code></td>
-            <td>각 Agent 노드의 실제 동작을 담당합니다. 입력 검증, VLM/RAG 호출, 검색 fallback, 랭킹, LLM 최종 응답, 에러 응답을 처리합니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/agent/state.py</code></td>
-            <td>Agent가 단계별로 들고 다니는 상태 값을 정의합니다. 이미지, 옷장, RAG 결과, 랭킹 결과, 에러 상태를 한 곳에서 관리합니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/schemas/ai.py</code></td>
-            <td>VLM 요청/응답, RAG 요청/응답, Agent error 계약을 Pydantic 스키마로 추가했습니다. 외부 AI 모듈 연결 시 이 형식을 맞추면 됩니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/services/llm_service.py</code></td>
-            <td>Mock LLM과 Gemini LLM을 같은 public contract로 감쌉니다. Gemini 응답이 후보 상품 밖의 값을 만들면 필터링해 안정성을 높였습니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/services/rag_service.py</code></td>
-            <td>현재는 mock catalog를 사용하지만, <code>search_request()</code> 경계를 통해 추후 실제 vector search API로 교체하기 쉽게 만들었습니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/services/vlm_service.py</code></td>
-            <td>단일 이미지 API와 다중 이미지 API를 모두 지원합니다. 현재는 mock 분석이며, 추후 실제 vision API adapter만 교체하면 됩니다.</td>
-          </tr>
-          <tr>
-            <td><code>app/core/config.py</code>, <code>.env.example</code></td>
-            <td>Gemini API key, model, base URL, timeout 설정을 추가했습니다. <code>USE_MOCK_AI</code>로 mock과 실제 호출을 전환합니다.</td>
-          </tr>
-          <tr>
-            <td><code>scripts/run_llm_only.py</code></td>
-            <td>서버, VLM, RAG 없이 LLM 최종 응답 생성 단계만 단독으로 확인할 수 있는 로컬 실행 스크립트입니다.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="section">
-      <h2>팀별 연동 포인트</h2>
+      <h2>연속 대화와 API 진입점</h2>
+      <p>
+        LangGraph 한 번의 실행은 요청 단위이므로, 이전 대화를 자동으로 이어 주는 책임은 채팅 API와 DB 계층에 있습니다.
+        같은 Agent를 사용하더라도 호출하는 API에 따라 대화 내역을 자동으로 복원하는지가 달라집니다.
+      </p>
       <div class="two-col">
         <article class="card">
-          <span class="badge blue">VLM 팀</span>
-          <h3>교체해야 할 위치</h3>
-          <p><code>VlmService._external_analyze_many()</code> 내부를 실제 이미지 분석 API 호출로 바꾸면 됩니다.</p>
-          <ul>
-            <li>입력: <code>image_urls: list[str]</code></li>
-            <li>출력: <code>VLMResponse</code> 형식</li>
-            <li>중요 필드: category, color, material, fit, mood, sense_of_season</li>
-          </ul>
+          <span class="badge blue">일회성 추천</span>
+          <h3><code>POST /api/v1/recommendations</code></h3>
+          <p>
+            현재 요청만 처리합니다. 공개 요청에 <code>conversation_id</code>가 없고 DB에서 이전 메시지를 자동 조회하지 않으므로,
+            다음 요청의 “그중”, “아까 추천한 것” 같은 표현은 자동으로 연결되지 않습니다.
+          </p>
         </article>
         <article class="card">
-          <span class="badge blue">RAG 팀</span>
-          <h3>교체해야 할 위치</h3>
-          <p><code>RagService._external_search_request()</code> 내부를 실제 검색 API 또는 vector DB 호출로 바꾸면 됩니다.</p>
-          <ul>
-            <li>입력: <code>RAGRequest</code> 형식</li>
-            <li>출력: <code>RAGResponse</code> 형식</li>
-            <li>Musinsa 상품은 <code>product_url</code>이 필수입니다.</li>
-          </ul>
+          <span class="badge">연속 채팅</span>
+          <h3><code>POST /api/v1/chats/{conversation_id}/messages</code></h3>
+          <p>
+            같은 <code>conversation_id</code>의 최근 메시지와 직전 RAG 컨텍스트를 DB에서 불러와 Agent에 전달합니다.
+            질문과 답변도 다시 저장하므로 다음 요청과 서버 재시작 이후에도 대화 흐름을 이어갈 수 있습니다.
+          </p>
         </article>
       </div>
+      <div class="code-block">1) POST /api/v1/chats
+   -&gt; conversation_id = "chat-123"
+
+2) POST /api/v1/chats/chat-123/messages
+   { "query": "검은 재킷에 어울리는 바지 추천해줘", "image_urls": [] }
+
+3) POST /api/v1/chats/chat-123/messages
+   { "query": "그중 더 저렴한 걸로 골라줘", "image_urls": [] }
+
+서버가 chat-123의 이전 메시지와 RAG 후보를 복원하므로
+두 번째 질문의 "그중"을 직전 추천 후보로 해석합니다.</div>
+      <table>
+        <thead><tr><th>채팅 API가 자동으로 하는 일</th><th>처리 내용</th></tr></thead>
+        <tbody>
+          <tr><td>최근 대화 복원</td><td>같은 대화의 최근 메시지를 최대 20개까지 시간순으로 불러와 LLM 입력에 전달합니다.</td></tr>
+          <tr><td>직전 검색 컨텍스트 복원</td><td>assistant 메시지에 내부 저장된 RAG 후보, 검색 질의, 검색 대상을 가져옵니다.</td></tr>
+          <tr><td>후속 질문 판단</td><td>LLM이 기존 후보로 충분하면 관련 항목만 골라 재사용하고, 새 주제나 부족한 후보이면 RAG를 다시 수행합니다.</td></tr>
+          <tr><td>대화 저장</td><td>현재 사용자 질문과 Agent 답변을 각각 메시지로 저장해 다음 턴에서 다시 사용합니다.</td></tr>
+          <tr><td>내부 데이터 비공개</td><td><code>_agent_context</code>는 DB에만 보관하고 채팅 조회 API의 공개 payload에서는 제거합니다.</td></tr>
+        </tbody>
+      </table>
+      <p class="note">
+        따라서 ChatGPT처럼 이어지는 화면은 반드시 <code>/chats/{conversation_id}/messages</code>를 사용해야 합니다.
+        이는 LangGraph 기능의 차이가 아니라, 어떤 API 진입점이 대화 상태를 DB에서 복원해 주는지의 차이입니다.
+      </p>
     </section>
 
     <section class="section">
-      <h2>검색 대상 결정 규칙</h2>
+      <h2>입력 계약</h2>
+      <p>
+        Full-stack이 Agent에 넘기는 기본 계약은 <code>AgentRequest</code>입니다.
+        이미지는 파일 본문이 아니라 URL 배열로 전달하고, 이번 추천에서 기준이 되는 옷장 아이템은 <code>closet_items</code>로 전달합니다.
+      </p>
+      <div class="code-block">{
+  "user_id": "user_001",
+  "query": "화이트 니트랑 어울리는 바지 추천해줘",
+  "image_urls": [],
+  "closet_items": [
+    {
+      "closet_item_id": "closet_001",
+      "category": "bag",
+      "color": "black",
+      "material": "pvc",
+      "fit": "none",
+      "pattern": "graphic",
+      "mood": "street",
+      "sense_of_season": "summer"
+    }
+  ],
+  "use_closet_style": true,
+  "user_profile": {
+    "age_group": "20s",
+    "preferred_styles": ["minimal", "casual"]
+  }
+}</div>
       <table>
-        <thead>
-          <tr>
-            <th>상황</th>
-            <th>검색 대상</th>
-          </tr>
-        </thead>
+        <thead><tr><th>필드</th><th>Agent 관점의 의미</th></tr></thead>
+        <tbody>
+          <tr><td><code>query</code></td><td>사용자의 자연어 의도입니다. 비어 있으면 외부 AI를 호출하지 않고 <code>INVALID_INPUT</code>으로 종료합니다.</td></tr>
+          <tr><td><code>image_urls</code></td><td>패션 서비스 요청으로 분류되고 이미지가 있을 때 VLM 경로로 들어갑니다. 없으면 빈 배열입니다.</td></tr>
+          <tr><td><code>closet_items</code></td><td>이번 요청에서 참고할 보유 아이템입니다. retrieval planner LLM이 <code>closet</code> 또는 <code>hybrid</code> 판단에 활용합니다.</td></tr>
+          <tr><td><code>use_closet_style</code></td><td>기존 옷장 스타일과 취향을 랭킹에 반영할지 결정합니다. <code>false</code>이면 query 관련성 보너스를 더 중시합니다.</td></tr>
+          <tr><td><code>user_profile</code></td><td>검색 계획, RAG 필터, 랭킹 보너스에 사용하는 사용자 취향 정보입니다.</td></tr>
+          <tr><td><code>chat_history</code></td><td>Pipeline 내부 입력입니다. 채팅 API가 최근 user/assistant 메시지를 시간순으로 만들어 자동 전달합니다.</td></tr>
+          <tr><td><code>previous_rag_*</code></td><td>Pipeline 내부 입력입니다. 직전 후보·질의·검색 대상을 채팅 DB에서 복원해 후속 질문 재사용 판단에 전달합니다.</td></tr>
+        </tbody>
+      </table>
+      <p class="note">
+        공개 <code>AgentRequest</code>는 일회성 추천 계약입니다. <code>chat_history</code>와 <code>previous_rag_results</code>는
+        <code>ChatService</code>가 내부적으로 <code>AidFitAgentPipeline.run()</code>에 전달하는 연속 대화용 상태입니다.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>State 구조</h2>
+      <p>
+        Agent는 한 번의 추천 요청을 <code>AgentState</code>에 담아 노드 사이를 이동시킵니다.
+        State는 입력값, 중간 판단, 외부 모듈 결과, 최종 응답을 분리해서 들고 있기 때문에 디버깅과 모듈 교체가 쉬워집니다.
+      </p>
+      <table>
+        <thead><tr><th>상태 그룹</th><th>주요 키</th><th>설명</th></tr></thead>
+        <tbody>
+          <tr><td>Full-stack 입력</td><td><code>user_id</code>, <code>query</code>, <code>image_urls</code>, <code>closet_items</code>, <code>use_closet_style</code>, <code>user_profile</code></td><td>요청에서 직접 들어온 값입니다. Agent 판단의 출발점입니다.</td></tr>
+          <tr><td>대화 컨텍스트</td><td><code>chat_history</code>, <code>previous_rag_results</code>, <code>previous_rag_query</code>, <code>previous_retrieval_target</code></td><td>후속 질문의 지시어를 해석하고 이전 검색 결과 재사용 여부를 판단하는 입력입니다.</td></tr>
+          <tr><td>컨텍스트 판단</td><td><code>has_image</code>, <code>has_closet_items</code>, <code>is_fashion_item</code></td><td>VLM 호출 여부와 비의류 이미지 차단에 사용합니다.</td></tr>
+          <tr><td>LLM 추론</td><td><code>intent</code>, <code>intent_reason</code>, <code>resolved_query</code>, <code>retrieval_action</code>, <code>retrieval_target</code>, <code>retrieval_reason</code>, <code>selected_rag_item_refs</code></td><td>일반/패션 분류, 독립 질의, 재사용/재검색, 검색 대상과 선택 후보를 보관합니다.</td></tr>
+          <tr><td>VLM/RAG 결과</td><td><code>vlm_items</code>, <code>rag_query</code>, <code>rag_request</code>, <code>rag_results</code>, <code>has_rag_result</code>, <code>rag_reused</code></td><td>이미지 분석 결과와 검색 요청/응답, 이전 후보 재사용 성공 여부를 보관합니다.</td></tr>
+          <tr><td>후처리</td><td><code>ranked_items</code>, <code>final_response</code>, <code>error</code></td><td>정렬된 후보와 최종 응답입니다. 내부 에러는 public 응답 계약으로 변환됩니다.</td></tr>
+          <tr><td>호환 필드</td><td><code>image_url</code>, <code>closet_item_id</code>, <code>recommendation_target</code>, <code>rag_items</code></td><td>기존 단일 이미지/기존 코드 경로와의 호환을 위해 유지합니다.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>LLM 기반 의도·검색 계획</h2>
+      <p>
+        운영 모드(<code>USE_MOCK_AI=false</code>)에서는 Agent 노드에 키워드 목록을 두고 경로를 고르지 않습니다.
+        <code>LlmService</code>가 Gemini의 구조화 출력을 받고, Agent가 Pydantic 계약으로 검증한 값만 LangGraph 분기에 사용합니다.
+      </p>
+      <table>
+        <thead><tr><th>LLM 단계</th><th>입력</th><th>구조화 출력과 분기</th></tr></thead>
+        <tbody>
+          <tr><td><code>classify_intent()</code></td><td>현재 query, 최근 대화, 이미지 첨부 여부</td><td><code>general_chat</code>이면 일반 답변 노드로 종료하고, <code>fashion_service</code>이면 VLM/검색 흐름으로 진행합니다.</td></tr>
+          <tr><td><code>refine_query()</code></td><td>현재 query, 최근 대화, VLM 의류 속성</td><td><code>QueryRefinement.query</code>에 지시어와 이미지 정보를 반영한 독립적인 <code>resolved_query</code>를 반환합니다.</td></tr>
+          <tr><td><code>plan_retrieval()</code></td><td>원문/정제 query, 이전 RAG 후보, 옷장·프로필·VLM 컨텍스트</td><td><code>RetrievalPlan</code>으로 <code>reuse|retrieve</code>, <code>closet|musinsa|hybrid</code>, 선택 후보 ref를 반환합니다.</td></tr>
+          <tr><td><code>compose_general_chat()</code></td><td>일반 질문과 최근 대화</td><td>RAG 없이 자연어 답변을 생성하고 공개 <code>AgentResponse</code> 형태로 감쌉니다.</td></tr>
+        </tbody>
+      </table>
+      <p class="note">
+        <code>USE_MOCK_AI=true</code>일 때만 외부 모델 없이 테스트할 수 있도록 결정론적 mock 판단을 사용합니다.
+        실제 서비스 라우팅은 <code>USE_MOCK_AI=false</code>와 <code>GEMINI_API_KEY</code> 설정을 전제로 합니다.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>VLM과 RAG 계약</h2>
+      <div class="two-col">
+        <article class="card">
+          <span class="badge blue">Agent → VLM</span>
+          <h3>이미지 분석 요청</h3>
+          <p><code>VLMRequest</code>는 <code>image_urls</code>만 전달합니다. 사용자 query는 VLM에 넘기지 않고, VLM은 이미지에서 보이는 패션 속성만 분석합니다.</p>
+          <div class="code-block">{
+  "image_urls": [
+    "https://cdn.aidfit.com/images/item_001.jpg"
+  ]
+}</div>
+        </article>
+        <article class="card">
+          <span class="badge blue">VLM → Agent</span>
+          <h3>패션 메타데이터 반환</h3>
+          <p>반환값은 <code>VLMResponse</code>입니다. <code>is_fashion_item=false</code>이면 Agent는 RAG를 호출하지 않고 에러 응답을 만듭니다.</p>
+          <div class="code-block">{
+  "items": [
+    {
+      "category": "top",
+      "color": "white",
+      "material": "knit",
+      "fit": "oversized",
+      "mood": "minimal",
+      "sense_of_season": "spring",
+      "is_fashion_item": true
+    }
+  ],
+  "is_fashion_item": true
+}</div>
+        </article>
+      </div>
+      <div class="two-col" style="margin-top: 14px;">
+        <article class="card">
+          <span class="badge blue">Agent → RAG</span>
+          <h3>검색 요청 조립</h3>
+          <p>새 검색이 필요할 때 Agent는 LLM이 만든 <code>resolved_query</code>, VLM 결과, 옷장 아이템, 프로필, 검색 대상, 필터를 하나의 <code>RAGRequest</code>로 묶습니다.</p>
+          <div class="code-block">{
+  "user_id": "user_001",
+  "query": "화이트 니트랑 어울리는 바지 추천",
+  "retrieval_target": "hybrid",
+  "vlm_items": [],
+  "closet_items": [],
+  "use_closet_style": true,
+  "filters": {
+    "preferred_styles": ["minimal", "casual"]
+  },
+  "top_k": 10
+}</div>
+        </article>
+        <article class="card">
+          <span class="badge blue">RAG → Agent</span>
+          <h3>후보 리스트 반환</h3>
+          <p>RAG는 상품 후보와 점수를 반환합니다. 무신사 상품은 클라이언트에서 바로 열 수 있도록 <code>product_url</code>이 필수입니다.</p>
+          <div class="code-block">{
+  "items": [
+    {
+      "source": "musinsa",
+      "name": "세미 와이드 데님 팬츠",
+      "image_url": "https://image.msscdn.net/example.jpg",
+      "product_url": "https://www.musinsa.com/products/10001",
+      "final_score": 0.91
+    }
+  ],
+  "message": "success"
+}</div>
+        </article>
+      </div>
+      <p class="note">
+        retrieval planner가 <code>action=reuse</code>를 반환하면 새 <code>RAGRequest</code>를 만들지 않습니다.
+        <code>selected_item_refs</code>가 실제 직전 후보에 존재하는지 검증한 뒤 해당 후보만 사용합니다. 존재하지 않는 ref,
+        빈 선택, 손상된 이전 후보는 새 RAG 경로로 자동 전환됩니다.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>랭킹과 fallback</h2>
+      <p>
+        RAG 결과가 있으면 <code>style_ranker_node</code>가 다시 정렬합니다.
+        기본 점수는 <code>final_score</code>, <code>metadata_score</code>, <code>similarity_score</code> 순서로 사용하고,
+        <code>use_closet_style</code> 값에 따라 추가 보너스가 달라집니다.
+      </p>
+      <table>
+        <thead><tr><th>상황</th><th>랭킹 방식</th></tr></thead>
+        <tbody>
+          <tr><td><code>use_closet_style=true</code></td><td>사용자 선호 스타일과 옷장 아이템 메타데이터가 후보 상품과 겹치면 점수를 더합니다.</td></tr>
+          <tr><td><code>use_closet_style=false</code></td><td>기존 옷장 취향보다 현재 query와 후보 상품 메타데이터의 직접 관련성을 더 봅니다.</td></tr>
+          <tr><td>이전 RAG 결과 재사용</td><td>retrieval planner LLM이 이미 현재 후속 질문에 맞게 선택·정렬한 순서를 유지합니다.</td></tr>
+          <tr><td>RAG 결과가 없음</td><td><code>style</code>, <code>season</code> 필터를 제거하고 <code>top_k</code>를 최소 20으로 넓혀 1회 재검색합니다.</td></tr>
+          <tr><td>fallback 후에도 결과 없음</td><td><code>empty</code> 응답을 반환합니다.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>LLM의 역할</h2>
+      <p>
+        현재 <code>LlmService</code>는 최종 추천 문장만 만드는 것이 아니라 Agent의 의미 기반 판단 단계 전체를 담당합니다.
+        모든 판단 호출은 Gemini structured output을 사용하고, 반환값은 전용 Pydantic 모델로 다시 검증합니다.
+      </p>
+      <table>
+        <thead><tr><th>메서드</th><th>역할</th><th>검증 계약</th></tr></thead>
+        <tbody>
+          <tr><td><code>classify_intent()</code></td><td>일반 채팅과 AID-FIT 패션 서비스 요청을 분리합니다.</td><td><code>IntentClassification</code></td></tr>
+          <tr><td><code>compose_general_chat()</code></td><td>일반 대화 요청에 RAG 없이 답변합니다.</td><td><code>GeneralChatAnswer</code> → <code>AgentResponse</code></td></tr>
+          <tr><td><code>refine_query()</code></td><td>대화 문맥과 VLM 속성을 합쳐 독립적인 검색 query를 만듭니다.</td><td><code>QueryRefinement</code></td></tr>
+          <tr><td><code>plan_retrieval()</code></td><td>이전 후보 재사용/새 검색과 검색 대상을 결정합니다.</td><td><code>RetrievalPlan</code> + 실제 candidate ref 검증</td></tr>
+          <tr><td><code>compose_recommendation()</code></td><td>검색 후보만 사용해 추천 문장과 스타일 가이드를 생성합니다.</td><td><code>AgentResponse</code> + candidate 재매칭</td></tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>모든 Gemini 판단 호출은 <code>responseMimeType: application/json</code>과 단계별 <code>responseSchema</code>를 사용합니다.</li>
+        <li>이전 RAG 후보는 planner 입력에 최대 20개, 최종 추천 생성에는 상위 후보 최대 8개를 전달합니다.</li>
+        <li>최종 추천은 최대 5개로 제한하며, 후보에 없는 상품명·가격·URL은 응답에 들어가지 않습니다.</li>
+        <li>일반 채팅 응답도 기존 공개 계약을 유지하기 위해 빈 추천 배열을 가진 <code>AgentResponse</code>로 반환합니다.</li>
+      </ul>
+      <div class="code-block">LLM intent JSON -&gt; IntentClassification -&gt; LangGraph 분기
+VLM + history + query -&gt; QueryRefinement -&gt; resolved_query
+previous RAG + context -&gt; RetrievalPlan -&gt; reuse 또는 retrieve
+ranked_items -&gt; Gemini recommendation JSON
+  -&gt; candidate item_id/image_url 재매칭
+  -&gt; AgentResponse 검증 -&gt; Frontend 응답</div>
+    </section>
+
+    <section class="section">
+      <h2>에러 응답</h2>
+      <p>
+        내부 노드는 <code>AgentError</code> 형태로 에러를 만들지만, 외부 응답은 기존 <code>AgentResponse</code> 계약에 맞춰
+        <code>status=error</code>, 빈 추천 리스트, <code>style_guide=null</code> 형태로 반환합니다.
+      </p>
+      <table>
+        <thead><tr><th>코드</th><th>발생 위치</th><th>의미</th></tr></thead>
+        <tbody>
+          <tr><td><code>INVALID_INPUT</code>, <code>INVALID_CHAT_HISTORY</code></td><td>Agent</td><td>사용자 요청 또는 최근 대화 내역 형식이 잘못되었습니다.</td></tr>
+          <tr><td><code>INVALID_CLOSET_ITEMS</code>, <code>MISSING_CLOSET_ITEM_ID</code></td><td>Agent</td><td>옷장 아이템 배열 또는 필수 ID가 잘못되었습니다.</td></tr>
+          <tr><td><code>INTENT_INVALID_RESPONSE</code>, <code>INTENT_CLASSIFICATION_FAILED</code></td><td>LLM</td><td>일반/패션 의도 분류 호출 또는 구조화 출력 검증이 실패했습니다.</td></tr>
+          <tr><td><code>GENERAL_CHAT_INVALID_RESPONSE</code>, <code>GENERAL_CHAT_FAILED</code></td><td>LLM</td><td>일반 채팅 답변 호출 또는 공개 응답 검증이 실패했습니다.</td></tr>
+          <tr><td><code>VLM_INVALID_RESPONSE</code>, <code>VLM_ANALYSIS_FAILED</code>, <code>VLM_NOT_FASHION_ITEM</code></td><td>VLM</td><td>이미지 분석 실패, 계약 불일치, 비의류 이미지 입력을 나타냅니다.</td></tr>
+          <tr><td><code>QUERY_REFINEMENT_INVALID_RESPONSE</code>, <code>QUERY_REFINEMENT_FAILED</code></td><td>LLM</td><td>대화·VLM 결합 질의 생성 또는 결과 검증이 실패했습니다.</td></tr>
+          <tr><td><code>RETRIEVAL_PLAN_INVALID_RESPONSE</code>, <code>RETRIEVAL_PLANNING_FAILED</code></td><td>LLM</td><td>기존 후보 재사용/새 검색 및 검색 대상 결정이 실패했습니다.</td></tr>
+          <tr><td><code>RAG_INVALID_RESPONSE</code>, <code>RAG_SEARCH_FAILED</code></td><td>RAG</td><td>새 후보 검색 호출 또는 반환 계약 검증이 실패했습니다.</td></tr>
+          <tr><td><code>FINAL_RESPONSE_INVALID</code>, <code>FINAL_RESPONSE_FAILED</code></td><td>LLM</td><td>최종 추천 응답 생성 또는 <code>AgentResponse</code> 검증이 실패했습니다.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>구현 파일 안내</h2>
+      <table>
+        <thead><tr><th>파일</th><th>역할</th></tr></thead>
+        <tbody>
+          <tr><td><code>app/agent/agent_pipeline.py</code></td><td>일반 채팅, VLM, 질의 정제, 검색 계획, RAG 재사용/재검색, 최종 응답 노드와 분기를 연결합니다.</td></tr>
+          <tr><td><code>app/agent/nodes.py</code></td><td>각 LLM/VLM/RAG 경계 검증, 상태 갱신, fallback, 랭킹, 공개 응답 변환을 구현합니다.</td></tr>
+          <tr><td><code>app/agent/state.py</code></td><td>대화 내역, 이전 RAG 컨텍스트, LLM 판단 이유를 포함한 전체 <code>AgentState</code>를 정의합니다.</td></tr>
+          <tr><td><code>app/agent/prompts.py</code></td><td>의도 분류, 질의 정제, 검색 계획, 일반 채팅, 최종 스타일 응답 프롬프트와 mock 질의 결합 도우미를 보관합니다.</td></tr>
+          <tr><td><code>app/schemas/ai.py</code></td><td><code>IntentClassification</code>, <code>QueryRefinement</code>, <code>RetrievalPlan</code>, VLM/RAG/error 계약을 검증합니다.</td></tr>
+          <tr><td><code>app/schemas/recommendation.py</code></td><td>Full-stack과 Agent 사이의 공개 요청/응답 계약을 정의합니다.</td></tr>
+          <tr><td><code>app/schemas/chat.py</code>, <code>app/db/models.py</code></td><td>대화·메시지 계약과 DB 모델을 정의하고, 공개 payload에서 내부 <code>_agent_context</code>를 제거합니다.</td></tr>
+          <tr><td><code>app/services/chat_service.py</code>, <code>app/api/v1/chats.py</code></td><td>대화 소유권 확인, 최근 메시지/RAG 컨텍스트 복원, user/assistant 메시지 저장, 연속 채팅 API를 담당합니다.</td></tr>
+          <tr><td><code>app/services/recommendation_service.py</code></td><td>API 계층과 Agent를 연결하고, 채팅 경로에는 trace를 반환하며 추천 경로에는 공개 응답만 반환합니다.</td></tr>
+          <tr><td><code>app/services/vlm_service.py</code>, <code>app/services/rag_service.py</code></td><td>현재는 mock 구현을 포함하며, 실제 VLM/RAG API로 교체할 경계입니다.</td></tr>
+          <tr><td><code>app/services/llm_service.py</code></td><td>Gemini 구조화 호출과 mock 모드를 감싸며 의도·질의·검색 계획·일반 답변·최종 추천을 생성하고 검증합니다.</td></tr>
+          <tr><td><code>tests/test_agent_pipeline.py</code> 외</td><td>일반 채팅 분기, VLM 결합 질의, LLM 검색 대상, RAG 재사용/재검색, 채팅 컨텍스트 비공개 처리를 검증합니다.</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="section">
+      <h2>현재 구현 기준 주의사항</h2>
+      <p>
+        문서의 흐름은 실제 Agent 코드 기준입니다. 다만 외부 AI/RAG 시스템은 아직 adapter 경계만 열려 있고,
+        기본 실행은 mock 구현을 사용합니다. 팀 연동 시에는 아래 지점을 먼저 확인하면 됩니다.
+      </p>
+      <table>
+        <thead><tr><th>영역</th><th>현재 상태</th><th>연동 시 확인할 점</th></tr></thead>
         <tbody>
           <tr>
-            <td>사용자가 "내 옷장", "가진 옷", "closet"처럼 옷장만 요구</td>
-            <td><code>closet</code></td>
+            <td><code>VlmService</code></td>
+            <td><code>USE_MOCK_AI=true</code> 기본값에서는 URL 기반 mock 분석을 반환합니다.</td>
+            <td><code>_external_analyze_many()</code>를 실제 vision API 호출로 교체하고 <code>VLMResponse</code> 계약을 지켜야 합니다.</td>
           </tr>
           <tr>
-            <td>사용자가 "무신사", "구매", "상품", "buy"처럼 구매 상품을 요구</td>
-            <td><code>musinsa</code></td>
+            <td><code>RagService</code></td>
+            <td><code>RAGRequest</code>는 <code>closet</code>, <code>musinsa</code>, <code>hybrid</code>를 받지만 mock 검색은 임시 무신사형 카탈로그를 순환 반환합니다.</td>
+            <td><code>_external_search_request()</code>에서 retrieval target, filters, top_k를 실제 검색 조건으로 반영해야 합니다.</td>
           </tr>
           <tr>
-            <td>옷장 아이템이 함께 전달됨</td>
-            <td><code>hybrid</code></td>
+            <td><code>LlmService</code></td>
+            <td><code>USE_MOCK_AI=false</code>이면 의도 분류부터 최종 답변까지 Gemini structured output을 사용합니다.</td>
+            <td>모든 decision schema를 유지하고, 최종 상품은 후보의 <code>item_id</code> 또는 <code>image_url</code>로 재매칭해야 합니다.</td>
           </tr>
           <tr>
-            <td>사용자 프로필이 있고 <code>use_closet_style=true</code></td>
-            <td><code>hybrid</code></td>
+            <td>연속 대화</td>
+            <td><code>ChatService</code>가 최근 메시지와 내부 RAG 컨텍스트를 DB에서 복원합니다.</td>
+            <td>프론트 채팅 화면은 <code>/chats/{conversation_id}/messages</code>를 사용해야 하며, 운영 DB에는 채팅 테이블 migration이 필요합니다.</td>
           </tr>
           <tr>
-            <td>그 외 텍스트 추천 요청</td>
-            <td><code>musinsa</code></td>
+            <td>디버깅</td>
+            <td><code>AidFitAgentPipeline.run(..., return_trace=True)</code>로 응답, VLM/RAG 결과, <code>intent</code>, <code>resolved_query</code>, <code>retrieval_action</code>, 판단 이유를 볼 수 있습니다.</td>
+            <td>Frontend/API 응답은 기본적으로 <code>final_response</code>만 받으므로 trace는 내부 확인용으로 사용합니다.</td>
           </tr>
         </tbody>
       </table>
     </section>
 
     <section class="section">
-      <h2>LLM 안정성 처리</h2>
+      <h2>실행과 검증</h2>
       <p>
-        LLM은 문장을 자연스럽게 만드는 역할만 맡고, 상품 데이터의 사실성은 백엔드가 다시 보장하도록 했습니다.
-        즉, Gemini가 상품명이나 URL을 잘못 만들더라도 최종 응답은 RAG 후보 상품 기준으로 보정됩니다.
-      </p>
-      <ul>
-        <li>Gemini에는 최대 8개 후보만 전달해 prompt 크기를 제한합니다.</li>
-        <li><code>responseMimeType: application/json</code>과 <code>responseSchema</code>로 JSON 출력을 요구합니다.</li>
-        <li><code>_normalize_llm_response()</code>가 LLM 추천을 후보 상품 ID 또는 이미지 URL로 다시 매칭합니다.</li>
-        <li>후보에 없는 상품을 추천하면 제거하고, 남는 추천이 없으면 <code>empty</code> 응답으로 처리합니다.</li>
-        <li>최종 응답은 <code>AgentResponse</code>로 다시 검증합니다.</li>
-      </ul>
-      <div class="code-block">Gemini raw JSON
-  -> JSON parse
-  -> candidate_items 기준 재매칭
-  -> AgentResponse 검증
-  -> RecommendationResponse HTTP body</div>
-    </section>
-
-    <section class="section">
-      <h2>환경 변수</h2>
-      <p>
-        기본값은 mock AI입니다. 실제 Gemini 호출을 확인하려면 로컬 <code>.env</code>에서 아래 값을 설정합니다.
+        기본값은 외부 호출 없이 동작하는 mock AI입니다. 실제 LLM 기반 의도 분류·질의 정제·검색 계획·일반 채팅·최종 추천을 확인하려면
+        <code>.env</code>에서 아래 값을 설정합니다.
       </p>
       <div class="code-block">USE_MOCK_AI=false
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3-flash-preview
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 GEMINI_TIMEOUT_SECONDS=30</div>
+      <p>주요 검증 명령은 다음과 같습니다.</p>
+      <div class="code-block">python -m pytest -q
+python -m compileall -q app tests</div>
       <p class="note">
-        실제 모델명은 <code>app/core/config.py</code>와 <code>.env.example</code> 값이 일치해야 합니다.
-        모델명이 잘못되면 Gemini 호출에서 404 또는 model not found 오류가 날 수 있습니다.
+        현재 구현 검증 결과는 전체 <strong>58개 테스트 통과</strong>입니다. 일반 채팅의 VLM/RAG 생략, LLM 정제 query 사용,
+        검색 대상 제어, 이전 RAG 선별 재사용, 새 질문 재검색, 잘못된 후보 ref의 안전한 재검색 전환을 포함합니다.
       </p>
-    </section>
-
-    <section class="section">
-      <h2>로컬 실행 방법</h2>
-      <p>LLM 단계만 빠르게 확인할 때:</p>
-      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" scripts\run_llm_only.py</div>
-      <p>네트워크 없이 mock LLM으로 확인할 때:</p>
-      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" scripts\run_llm_only.py --mock</div>
-      <p>백엔드 API 전체 흐름으로 확인할 때:</p>
-      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000</div>
-    </section>
-
-    <section class="section">
-      <h2>검증 항목</h2>
-      <p>이번 작업에서 추가된 테스트는 Agent 라우팅, fallback, ranking, AI contract, Gemini adapter를 중심으로 구성했습니다.</p>
-      <ul>
-        <li><code>tests/test_agent_pipeline.py</code>: 텍스트/이미지 요청, closet/musinsa/hybrid 라우팅, fallback, 랭킹, 에러 응답 검증</li>
-        <li><code>tests/test_ai_contracts.py</code>: VLM/RAG/error 스키마 계약 검증</li>
-        <li><code>tests/test_llm_service.py</code>: Gemini 요청 payload와 후보 상품 보정 로직 검증</li>
-      </ul>
-      <div class="code-block">&amp; "$env:USERPROFILE\miniconda3\python.exe" -m pytest tests\test_agent_pipeline.py tests\test_llm_service.py tests\test_ai_contracts.py</div>
     </section>
   </main>
 </body>

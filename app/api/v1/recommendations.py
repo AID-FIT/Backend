@@ -33,12 +33,21 @@ async def create_recommendation(
 ) -> RecommendationResponse:
     # 인증된 사용자 본인의 id만 신뢰한다(payload.user_id는 무시).
     user_profile = normalize_user_profile(payload.user_profile)
+    closet_service = ClosetService()
+    saved_closet_items = await closet_service.list_for_user(db, current_user)
+    requested_ids = {item.closet_item_id for item in payload.closet_items}
+    selected_closet_items = (
+        [item for item in saved_closet_items if item.id in requested_ids]
+        if requested_ids
+        else saved_closet_items
+    )
+    closet_payload = [closet_service.to_agent_payload(item) for item in selected_closet_items]
     result = await RecommendationService().create_and_persist(
         db=db,
         user_id=current_user.id,
         query=payload.query,
         image_urls=payload.image_urls,
-        closet_items=[item.model_dump() for item in payload.closet_items],
+        closet_items=closet_payload,
         use_closet_style=payload.use_closet_style,
         user_profile=user_profile,
     )
@@ -54,22 +63,11 @@ async def get_home_recommendation(
 ) -> RecommendationResponse:
     # Home cards reuse closet metadata and preference data as agent context.
     preference = await UserService().get_preference(db, current_user)
-    closet_items = await ClosetService().list_for_user(db, current_user)
+    closet_service = ClosetService()
+    closet_items = await closet_service.list_for_user(db, current_user)
     sizes = preference.sizes if preference else {}
     age_range = sizes.get("age_range") if isinstance(sizes, dict) else None
-    closet_payload = [
-        {
-            "closet_item_id": item.id,
-            "category": item.category,
-            "color": item.color,
-            "material": item.material,
-            "fit": item.fit,
-            "pattern": item.pattern,
-            "mood": item.mood,
-            "sense_of_season": item.sense_of_season,
-        }
-        for item in closet_items
-    ]
+    closet_payload = [closet_service.to_agent_payload(item) for item in closet_items]
     user_profile = {
         "age_group": age_range,
         "preferred_styles": preference.styles if preference else [],
@@ -85,7 +83,9 @@ async def get_home_recommendation(
             "preferred_style": preference.styles if preference else [],
             "closet_items": closet_payload,
         },
-        image_urls=[item.image_url for item in closet_items if item.image_url],
+        # Closet rows already contain VLM metadata; treating every owned image as
+        # a newly attached reference would exclude the whole closet from retrieval.
+        image_urls=[],
         closet_items=closet_payload,
         use_closet_style=True,
         user_profile=user_profile,

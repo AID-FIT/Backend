@@ -1,4 +1,9 @@
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
+
+
+class ChatHistoryMessage(TypedDict):
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class AgentState(TypedDict, total=False):
@@ -16,8 +21,15 @@ class AgentState(TypedDict, total=False):
     recommendation_target: str
     context: dict[str, Any]
 
-    # 후속 질문을 이해하기 위한 직전 대화 내역([{role, content}, ...], 시간순)
-    chat_history: list[dict[str, Any]]
+    # 후속 질문을 이해하기 위한 직전 대화 내역(시간순)
+    chat_history: list[ChatHistoryMessage]
+
+    # 직전 추천 턴의 검색 컨텍스트. 후속 질문이 기존 후보만으로 답할 수
+    # 있을 때 RAG를 다시 호출하지 않도록 채팅 계층에서 복원한다.
+    previous_rag_results: list[dict[str, Any]]
+    previous_shown_item_refs: list[str]
+    previous_rag_query: str | None
+    previous_retrieval_target: str | None
 
     # Input / image / closet state
     has_image: bool
@@ -25,8 +37,16 @@ class AgentState(TypedDict, total=False):
     is_fashion_item: bool
 
     # Agent reasoning state
-    intent: str
+    # 원문 query는 응답/저장에 유지하고, 이 값은 대화 문맥을 포함한 검색에 사용한다.
+    resolved_query: str
+    intent: Literal["general_chat", "fashion_service"]
+    intent_reason: str | None
     retrieval_target: str
+    retrieval_action: Literal["reuse", "retrieve"]
+    candidate_scope: Literal["all", "shown", "unseen"]
+    retrieval_reason: str | None
+    selected_rag_item_refs: list[str]
+    rag_reused: bool
 
     # VLM state
     vlm_items: list[dict[str, Any]]
@@ -36,6 +56,7 @@ class AgentState(TypedDict, total=False):
     rag_query: str
     rag_request: dict[str, Any]
     rag_results: list[dict[str, Any]]
+    candidate_pool: list[dict[str, Any]]
     has_rag_result: bool
     fallback_count: int
 

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     vlm_max_concurrency: int = 4
     vlm_max_image_bytes: int = 8 * 1024 * 1024
     vlm_max_items_per_image: int = 8
+    rag_candidate_cache_ttl_seconds: int = 15 * 60
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False

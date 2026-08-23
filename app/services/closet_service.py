@@ -92,9 +92,33 @@ class ClosetService:
         return closet_item
 
     async def list_for_user(self, db: AsyncSession, user: User) -> list[ClosetItem]:
+        return await self.list_for_user_id(db, user.id)
+
+    async def list_for_user_id(self, db: AsyncSession, user_id: str) -> list[ClosetItem]:
         result = await db.execute(
             select(ClosetItem)
-            .where(ClosetItem.user_id == user.id)
+            .where(ClosetItem.user_id == user_id)
             .order_by(ClosetItem.created_at.desc())
         )
         return list(result.scalars().all())
+
+    @staticmethod
+    def to_agent_payload(item: ClosetItem) -> dict:
+        """Convert a persisted closet row into an agent recommendation candidate."""
+        return {
+            "closet_item_id": item.id,
+            "name": item.name,
+            "brand": item.brand,
+            "price": item.price,
+            "category": item.category,
+            "label": item.sub_category,
+            "gender": item.gender,
+            "image_url": item.image_url,
+            "product_url": item.product_url,
+            "color": item.color,
+            "material": item.material,
+            "fit": item.fit,
+            "pattern": item.pattern,
+            "mood": item.mood,
+            "sense_of_season": item.sense_of_season,
+        }

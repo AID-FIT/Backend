@@ -22,7 +22,14 @@ class ClosetItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     closet_item_id: str
+    name: str | None = None
+    brand: str | None = None
+    price: int | None = None
     category: str | None = None
+    label: str | None = None
+    gender: str | None = None
+    image_url: str | None = None
+    product_url: str | None = None
     color: str | None = None
     material: str | None = None
     fit: str | None = None

@@ -1,7 +1,11 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.models import ChatConversation, ChatMessage
+from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
 
 # Agent 입력에 다시 넣을 직전 대화 수. 늘릴수록 맥락은 좋아지지만 토큰이 커진다.
@@ -17,8 +21,19 @@ class ChatNotFoundError(Exception):
 
 
 class ChatService:
-    def __init__(self, recommendation_service: RecommendationService | None = None) -> None:
+    def __init__(
+        self,
+        recommendation_service: RecommendationService | None = None,
+        closet_service: ClosetService | None = None,
+        candidate_cache_ttl_seconds: int | None = None,
+    ) -> None:
         self.recommendation_service = recommendation_service or RecommendationService()
+        self.closet_service = closet_service or ClosetService()
+        self.candidate_cache_ttl_seconds = (
+            settings.rag_candidate_cache_ttl_seconds
+            if candidate_cache_ttl_seconds is None
+            else candidate_cache_ttl_seconds
+        )
 
     async def create_conversation(
         self, db: AsyncSession, user_id: str, title: str | None = None
@@ -99,6 +114,9 @@ class ChatService:
 
         normalized_image_urls = image_urls or []
         history = await self._load_recent_messages(db, conversation_id, DEFAULT_HISTORY_LIMIT)
+        previous_context = self._extract_previous_agent_context(history)
+        closet_items = await self.closet_service.list_for_user_id(db, user_id)
+        closet_payload = [self.closet_service.to_agent_payload(item) for item in closet_items]
 
         user_message = ChatMessage(
             conversation_id=conversation_id,
@@ -114,18 +132,32 @@ class ChatService:
         await db.commit()
         await db.refresh(user_message)
 
-        agent_response = await self.recommendation_service.create(
+        agent_result = await self.recommendation_service.create(
             query=query,
             user_id=user_id,
             image_urls=normalized_image_urls,
+            closet_items=closet_payload,
             chat_history=self._serialize_history(history),
+            previous_rag_results=previous_context.get("candidate_pool", []),
+            previous_shown_item_refs=previous_context.get("shown_item_refs", []),
+            previous_rag_query=previous_context.get("rag_query"),
+            previous_retrieval_target=previous_context.get("retrieval_target"),
+            return_trace=True,
         )
+        trace = agent_result if isinstance(agent_result.get("response"), dict) else {"response": agent_result}
+        agent_response = trace["response"]
+        assistant_payload = dict(agent_response)
+        agent_context = self._build_agent_context(trace, previous_context)
+        if agent_context["candidate_pool"] and trace.get("retrieval_action") in {"reuse", "retrieve"}:
+            # Persist full candidates for the next-turn reuse decision. The public
+            # response serializer removes this private key from message payloads.
+            assistant_payload["_agent_context"] = agent_context
 
         assistant_message = ChatMessage(
             conversation_id=conversation_id,
             role="assistant",
             content=agent_response.get("message") or "",
-            payload=agent_response,
+            payload=assistant_payload,
         )
         db.add(assistant_message)
         await db.commit()
@@ -153,3 +185,182 @@ class ChatService:
     def _serialize_history(self, messages: list[ChatMessage]) -> list[dict]:
         # payload는 모델에 넣지 않는다. 상품 목록 전체를 다시 보내면 토큰만 커진다.
         return [{"role": message.role, "content": message.content} for message in messages]
+
+    def _extract_previous_agent_context(self, messages: list[ChatMessage]) -> dict:
+        """Find the latest reusable recommendation context in recent messages."""
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.role != "assistant" or not isinstance(message.payload, dict):
+                continue
+
+            context = message.payload.get("_agent_context")
+            if isinstance(context, dict):
+                candidate_pool = context.get("candidate_pool")
+                if not isinstance(candidate_pool, list):
+                    candidate_pool = context.get("rag_items")
+                if isinstance(candidate_pool, list) and candidate_pool:
+                    if not self._context_is_fresh(context, message):
+                        return self._empty_agent_context()
+                    normalized_pool = [item for item in candidate_pool if isinstance(item, dict)]
+                    shown_item_refs = context.get("shown_item_refs")
+                    if not isinstance(shown_item_refs, list):
+                        shown_item_refs = self._item_refs(message.payload.get("recommendations"))
+                    normalized_shown_refs = list(
+                        dict.fromkeys(
+                            str(item_ref).strip()
+                            for item_ref in shown_item_refs
+                            if str(item_ref).strip()
+                        )
+                    )
+                    return {
+                        "candidate_pool": normalized_pool,
+                        "rag_items": normalized_pool,
+                        "shown_item_refs": normalized_shown_refs,
+                        "rag_query": context.get("rag_query"),
+                        "retrieval_target": context.get("retrieval_target"),
+                        "retrieved_at": context.get("retrieved_at"),
+                    }
+
+            # Backward compatibility for conversations written before private
+            # agent context was introduced: recommendation cards are still valid
+            # (though smaller) prior candidates.
+            recommendations = message.payload.get("recommendations")
+            legacy_items = self._recommendations_to_rag_items(recommendations)
+            if not legacy_items:
+                continue
+            if not self._context_is_fresh({}, message):
+                return self._empty_agent_context()
+            previous_query = next(
+                (
+                    messages[previous_index].content
+                    for previous_index in range(index - 1, -1, -1)
+                    if messages[previous_index].role == "user"
+                ),
+                None,
+            )
+            sources = {item.get("source") for item in legacy_items}
+            if sources == {"closet"}:
+                target = "closet"
+            elif sources == {"musinsa"}:
+                target = "musinsa"
+            else:
+                target = "hybrid"
+            return {
+                "candidate_pool": legacy_items,
+                "rag_items": legacy_items,
+                "shown_item_refs": self._item_refs(legacy_items),
+                "rag_query": previous_query,
+                "retrieval_target": target,
+                "retrieved_at": self._message_timestamp(message),
+            }
+        return self._empty_agent_context()
+
+    def _recommendations_to_rag_items(self, value: object) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict] = []
+        for recommendation in value:
+            if not isinstance(recommendation, dict):
+                continue
+            image_url = recommendation.get("image_url")
+            source = recommendation.get("source")
+            product_url = recommendation.get("product_url")
+            if not image_url or source not in {"closet", "musinsa"}:
+                continue
+            if source == "musinsa" and not product_url:
+                continue
+            items.append(
+                {
+                    "item_id": recommendation.get("item_id"),
+                    "source": source,
+                    "name": recommendation.get("item_name"),
+                    "brand": recommendation.get("brand"),
+                    "price": recommendation.get("price"),
+                    "category": recommendation.get("category"),
+                    "image_url": image_url,
+                    "product_url": product_url,
+                }
+            )
+        return items
+
+    def _build_agent_context(self, trace: dict, previous_context: dict | None = None) -> dict:
+        previous = previous_context or self._empty_agent_context()
+        candidate_pool = trace.get("candidate_pool") or trace.get("rag_items") or []
+        rag_reused = bool(trace.get("rag_reused"))
+        shown_item_refs = trace.get("shown_item_refs")
+        if not isinstance(shown_item_refs, list):
+            current_refs = self._item_refs((trace.get("response") or {}).get("recommendations"))
+            shown_item_refs = [
+                *((previous.get("shown_item_refs") or []) if rag_reused else []),
+                *current_refs,
+            ]
+        return {
+            "schema_version": 2,
+            "candidate_pool": candidate_pool,
+            # Keep the old key while existing conversations and older servers coexist.
+            "rag_items": candidate_pool,
+            "shown_item_refs": list(dict.fromkeys(shown_item_refs)),
+            "rag_query": (
+                previous.get("rag_query")
+                if rag_reused
+                else trace.get("rag_query") or trace.get("resolved_query")
+            ),
+            "retrieval_target": trace.get("retrieval_target") or previous.get("retrieval_target"),
+            "retrieved_at": (
+                previous.get("retrieved_at")
+                if rag_reused and previous.get("retrieved_at")
+                else datetime.now(UTC).isoformat()
+            ),
+        }
+
+    def _context_is_fresh(self, context: dict, message: ChatMessage) -> bool:
+        if self.candidate_cache_ttl_seconds <= 0:
+            return True
+
+        raw_timestamp = context.get("retrieved_at") or getattr(message, "created_at", None)
+        if raw_timestamp is None:
+            # Legacy unsaved test fixtures and old rows without a timestamp remain usable.
+            return True
+        if isinstance(raw_timestamp, datetime):
+            retrieved_at = raw_timestamp
+        else:
+            try:
+                retrieved_at = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            except ValueError:
+                return False
+        if retrieved_at.tzinfo is None:
+            retrieved_at = retrieved_at.replace(tzinfo=UTC)
+        age_seconds = (datetime.now(UTC) - retrieved_at.astimezone(UTC)).total_seconds()
+        return age_seconds <= self.candidate_cache_ttl_seconds
+
+    def _item_refs(self, items: object) -> list[str]:
+        if not isinstance(items, list):
+            return []
+        refs: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("item_id", "product_url", "image_url"):
+                item_ref = str(item.get(key) or "").strip()
+                if item_ref:
+                    refs.append(item_ref)
+                    break
+        return list(dict.fromkeys(refs))
+
+    def _message_timestamp(self, message: ChatMessage) -> str | None:
+        created_at = getattr(message, "created_at", None)
+        if not isinstance(created_at, datetime):
+            return None
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        return created_at.isoformat()
+
+    def _empty_agent_context(self) -> dict:
+        return {
+            "candidate_pool": [],
+            "rag_items": [],
+            "shown_item_refs": [],
+            "rag_query": None,
+            "retrieval_target": None,
+            "retrieved_at": None,
+        }
