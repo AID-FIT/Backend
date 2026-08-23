@@ -41,6 +41,8 @@ spec:
           volumeMounts:
             - name: uploads-storage
               mountPath: /app/uploads
+            - name: rag-storage
+              mountPath: /app/data
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -56,12 +58,15 @@ spec:
             periodSeconds: 20
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 250m
+              memory: 1Gi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: "1"
+              memory: 2Gi
       volumes:
         - name: uploads-storage
           persistentVolumeClaim:
             claimName: backend-uploads-pvc
+        - name: rag-storage
+          persistentVolumeClaim:
+            claimName: backend-rag-pvc

@@ -3,6 +3,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+DEFAULT_RAG_TOP_K = 30
+
+
 class AgentError(BaseModel):
     # Internal error shape shared by all agent nodes.
     model_config = ConfigDict(extra="forbid")
@@ -108,7 +111,7 @@ class RAGRequest(BaseModel):
     closet_items: list[dict] = Field(default_factory=list)
     use_closet_style: bool = True
     filters: dict = Field(default_factory=dict)
-    top_k: int = 10
+    top_k: int = DEFAULT_RAG_TOP_K
 
 
 class RAGItem(BaseModel):

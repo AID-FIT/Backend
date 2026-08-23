@@ -390,6 +390,14 @@ def test_rag_request_adds_profile_and_vlm_filter_candidates() -> None:
     assert filters["color"] == "white"
 
 
+def test_rag_request_fetches_thirty_candidates_by_default() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(pipeline.run(query="가을 옷 추천해줘", user_id="user_001"))
+
+    assert rag.calls[0]["top_k"] == 30
+
+
 def test_context_filters_override_inferred_vlm_filters() -> None:
     pipeline, _, rag, _ = build_pipeline()
 

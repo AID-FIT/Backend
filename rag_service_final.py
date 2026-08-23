@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -8,13 +10,16 @@ from chromadb.api.models.Collection import Collection
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = str(BASE_DIR / "chromadb_final")
-COLLECTION_NAME = "musinsa"
-MODEL_NAME = "jhgan/ko-sroberta-multitask"
+CONFIGURED_DB_PATH = Path(settings.rag_vector_db_path)
+DB_PATH = str(CONFIGURED_DB_PATH if CONFIGURED_DB_PATH.is_absolute() else BASE_DIR / CONFIGURED_DB_PATH)
+COLLECTION_NAME = settings.rag_collection_name
+MODEL_NAME = settings.rag_embedding_model
 
-DEFAULT_TOP_K = 10
+DEFAULT_TOP_K = 30
 SEARCH_MULTIPLIER = 10
 MAX_SEARCH_WORDS = 120
 SIMILARITY_WEIGHT = 0.75
@@ -627,12 +632,28 @@ def build_effective_filters(request: RAGRequest) -> dict[str, Any]:
     return filters
 
 
+@lru_cache(maxsize=1)
 def get_collection() -> Collection:
+    db_path = Path(DB_PATH)
+    if not (db_path / "chroma.sqlite3").is_file():
+        raise FileNotFoundError(f"ChromaDB was not found at {db_path}")
+
+    configured_cache_path = Path(settings.rag_embedding_cache_path)
+    cache_path = (
+        configured_cache_path
+        if configured_cache_path.is_absolute()
+        else BASE_DIR / configured_cache_path
+    )
+    cache_path.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(cache_path))
+    if settings.rag_embedding_local_files_only:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
     embedding_function = SentenceTransformerEmbeddingFunction(
         model_name=MODEL_NAME,
-        local_files_only=True,
     )
-    client = chromadb.PersistentClient(path=DB_PATH)
+    client = chromadb.PersistentClient(path=str(db_path))
     return client.get_collection(COLLECTION_NAME, embedding_function=embedding_function)
 
 
@@ -766,6 +787,14 @@ def deduplicate_musinsa(items: list[RAGItem]) -> list[RAGItem]:
     return [*best_by_url.values(), *no_url]
 
 
+def item_refs(item: RAGItem) -> set[str]:
+    return {
+        str(value).strip()
+        for value in (item.item_id, item.product_url, item.image_url)
+        if value is not None and str(value).strip()
+    }
+
+
 def search_musinsa(
     request: RAGRequest,
     collection: Optional[Collection] = None,
@@ -794,11 +823,19 @@ def search_musinsa(
     )
     metadatas = result.get("metadatas", [[]])[0] or []
     distances = result.get("distances", [[]])[0] or []
+    excluded_refs = {
+        str(item_ref).strip()
+        for item_ref in (request.filters or {}).get("excluded_item_refs") or []
+        if str(item_ref).strip()
+    }
 
     items: list[RAGItem] = []
     for metadata, distance in zip(metadatas, distances):
         metadata_score = calculate_metadata_score(metadata, intents, filters, request)
-        items.append(build_musinsa_rag_item(metadata, float(distance), metadata_score))
+        item = build_musinsa_rag_item(metadata, float(distance), metadata_score)
+        if excluded_refs.intersection(item_refs(item)):
+            continue
+        items.append(item)
 
     items = deduplicate_musinsa(items)
     items.sort(key=lambda item: item.final_score or 0.0, reverse=True)

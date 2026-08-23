@@ -106,3 +106,53 @@ def test_hybrid_target_combines_closet_and_musinsa_items() -> None:
     response = asyncio.run(service.search_request(rag_request("hybrid", owned_items)))
 
     assert {item["source"] for item in response["items"]} == {"closet", "musinsa"}
+
+
+def test_external_musinsa_target_uses_vector_catalog(monkeypatch) -> None:
+    service = RagService(use_mock_ai=False)
+    calls = []
+
+    async def fake_vector_search(request) -> list[dict]:
+        calls.append(request)
+        return [
+            {
+                "item_id": "vector_001",
+                "source": "musinsa",
+                "name": "벡터 검색 상품",
+                "image_url": "https://cdn.aidfit.com/vector_001.jpg",
+                "product_url": "https://www.musinsa.com/products/vector_001",
+                "similarity_score": 0.91,
+                "metadata_score": 0.4,
+                "final_score": 0.7825,
+            }
+        ]
+
+    monkeypatch.setattr(service, "_search_vector_catalog", fake_vector_search)
+
+    response = asyncio.run(service.search_request(rag_request("musinsa", [])))
+
+    assert len(calls) == 1
+    assert response["items"][0]["item_id"] == "vector_001"
+    assert response["items"][0]["final_score"] == 0.7825
+
+
+def test_external_hybrid_target_combines_closet_and_vector_items(monkeypatch) -> None:
+    service = RagService(use_mock_ai=False)
+
+    async def fake_vector_search(_request) -> list[dict]:
+        return [
+            {
+                "item_id": "vector_001",
+                "source": "musinsa",
+                "name": "벡터 검색 상품",
+                "image_url": "https://cdn.aidfit.com/vector_001.jpg",
+                "product_url": "https://www.musinsa.com/products/vector_001",
+            }
+        ]
+
+    monkeypatch.setattr(service, "_search_vector_catalog", fake_vector_search)
+    owned_items = [closet_item("closet_001", "https://cdn.aidfit.com/closet_001.jpg")]
+
+    response = asyncio.run(service.search_request(rag_request("hybrid", owned_items)))
+
+    assert {item["source"] for item in response["items"]} == {"closet", "musinsa"}

@@ -55,6 +55,16 @@ def test_rag_request_contract_contains_agent_context() -> None:
     assert request.retrieval_target == "hybrid"
 
 
+def test_rag_request_defaults_to_thirty_candidates() -> None:
+    request = RAGRequest(
+        user_id="user_001",
+        query="가을 옷 추천해줘",
+        retrieval_target="musinsa",
+    )
+
+    assert request.top_k == 30
+
+
 def test_rag_item_requires_musinsa_product_url() -> None:
     # Musinsa recommendations need product URLs for client navigation.
     with pytest.raises(ValidationError):

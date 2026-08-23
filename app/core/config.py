@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     vlm_max_image_bytes: int = 8 * 1024 * 1024
     vlm_max_items_per_image: int = 8
     rag_candidate_cache_ttl_seconds: int = 15 * 60
+    rag_vector_db_path: str = "data/chromadb_final"
+    rag_collection_name: str = "musinsa"
+    rag_embedding_model: str = "jhgan/ko-sroberta-multitask"
+    rag_embedding_cache_path: str = "data/huggingface"
+    rag_embedding_local_files_only: bool = False
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False
