@@ -1,8 +1,16 @@
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ClosetItem, ImageAsset, User
 from app.services.vlm_service import VlmService
+
+logger = logging.getLogger(__name__)
+
+# 한 요청에서 처리할 최대 장수. VLM 한 건에 수 초가 걸리므로
+# 함수 실행 시간(maxDuration) 안에 끝나도록 묶어둔다.
+DEFAULT_PENDING_BATCH = 3
 
 
 class ClosetService:
@@ -13,6 +21,14 @@ class ClosetService:
         self,
         db: AsyncSession,
         user: User,
+        image: ImageAsset,
+    ) -> ClosetItem | None:
+        return await self.reuse_analysis_for(db, user.id, image)
+
+    async def reuse_analysis_for(
+        self,
+        db: AsyncSession,
+        user_id: str,
         image: ImageAsset,
     ) -> ClosetItem | None:
         """같은 내용의 사진이 이미 분석돼 있으면 결과를 복사한다. 없으면 None.
@@ -33,7 +49,7 @@ class ClosetService:
         if source is None:
             return None
 
-        return await self._upsert(db, user, image, dict(source.raw_vlm_result or {}))
+        return await self._upsert(db, user_id, image, dict(source.raw_vlm_result or {}))
 
     async def has_analysis(self, db: AsyncSession, image: ImageAsset) -> bool:
         result = await db.execute(
@@ -47,13 +63,21 @@ class ClosetService:
         user: User,
         image: ImageAsset,
     ) -> ClosetItem:
+        return await self.analyze_and_store_for(db, user.id, image)
+
+    async def analyze_and_store_for(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        image: ImageAsset,
+    ) -> ClosetItem:
         vlm_result = await self.vlm_service.analyze(image.storage_url)
-        return await self._upsert(db, user, image, vlm_result)
+        return await self._upsert(db, user_id, image, vlm_result)
 
     async def _upsert(
         self,
         db: AsyncSession,
-        user: User,
+        user_id: str,
         image: ImageAsset,
         vlm_result: dict,
     ) -> ClosetItem:
@@ -61,7 +85,7 @@ class ClosetService:
         closet_item = existing.scalar_one_or_none()
 
         values = {
-            "user_id": user.id,
+            "user_id": user_id,
             "image_id": image.id,
             "name": str(vlm_result.get("name") or "옷장 아이템"),
             "brand": str(vlm_result.get("brand") or "unknown"),
@@ -90,6 +114,61 @@ class ClosetService:
 
         await db.flush()
         return closet_item
+
+    async def list_pending_images(
+        self,
+        db: AsyncSession,
+        user_id: str | None = None,
+        limit: int = DEFAULT_PENDING_BATCH,
+    ) -> list[ImageAsset]:
+        """분석이 남아 있는 이미지를 오래된 것부터 돌려준다.
+
+        업로드와 분석이 분리돼 있어, 분석 요청이 도달하지 못하면(네트워크 끊김,
+        앱 종료) 이미지가 메타데이터 없이 남는다. 그 잔여분을 찾는다.
+        user_id를 주지 않으면 전체를 훑는다(Cron 용도).
+        """
+        query = (
+            select(ImageAsset)
+            .outerjoin(ClosetItem, ClosetItem.image_id == ImageAsset.id)
+            .where(ClosetItem.id.is_(None), ImageAsset.user_id.is_not(None))
+            .order_by(ImageAsset.created_at.asc())
+            .limit(limit)
+        )
+        if user_id is not None:
+            query = query.where(ImageAsset.user_id == user_id)
+
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
+    async def analyze_pending(
+        self,
+        db: AsyncSession,
+        user_id: str | None = None,
+        limit: int = DEFAULT_PENDING_BATCH,
+    ) -> dict:
+        """남아 있는 분석을 한 배치만큼 처리한다.
+
+        한 장이 실패해도 나머지는 이어서 처리한다. 실패한 장은 다음 호출에서
+        다시 잡히므로, 이 함수 자체가 재시도 장치가 된다.
+        """
+        pending = await self.list_pending_images(db, user_id=user_id, limit=limit)
+        analyzed = 0
+        failed = 0
+
+        for image in pending:
+            try:
+                if await self.reuse_analysis_for(db, image.user_id, image) is None:
+                    await self.analyze_and_store_for(db, image.user_id, image)
+                await db.commit()
+                analyzed += 1
+            except Exception:
+                # 한 장의 실패가 배치 전체를 되돌리지 않도록 여기서 끊는다.
+                await db.rollback()
+                failed += 1
+                logger.warning("pending analysis failed for image %s", image.id, exc_info=True)
+
+        remaining = len(await self.list_pending_images(db, user_id=user_id, limit=limit))
+        return {"analyzed": analyzed, "failed": failed, "has_more": remaining > 0}
 
     async def list_for_user(self, db: AsyncSession, user: User) -> list[ClosetItem]:
         return await self.list_for_user_id(db, user.id)

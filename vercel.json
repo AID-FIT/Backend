@@ -10,5 +10,11 @@
       "source": "/(.*)",
       "destination": "/api/index.py"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/v1/cron/analyze-pending",
+      "schedule": "0 18 * * *"
+    }
   ]
 }

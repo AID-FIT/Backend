@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.db.models import ClosetItem, ImageAsset, User
 from app.db.session import get_db
-from app.schemas.recommendation import ImageUploadResponse
+from app.schemas.recommendation import ImageUploadResponse, PendingAnalysisResponse
 from app.services.closet_service import ClosetService
 from app.services.storage_service import StorageService
 
@@ -90,6 +90,21 @@ async def analyze_image(
         content_type=image.content_type,
         analyzed=True,
     )
+
+
+@router.post("/analyze-pending", response_model=PendingAnalysisResponse)
+async def analyze_pending_images(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PendingAnalysisResponse:
+    """분석이 남아 있는 내 사진을 한 배치만큼 처리한다.
+
+    업로드 직후의 분석 요청이 도달하지 못한 경우를 옷장 진입 시 회수한다.
+    한 번에 다 처리하지 않고 has_more로 알린다. VLM 한 건이 수 초라
+    함수 실행 시간 안에 끝나는 만큼만 잡는다.
+    """
+    result = await ClosetService().analyze_pending(db, user_id=current_user.id)
+    return PendingAnalysisResponse(**result)
 
 
 @router.get("", response_model=list[ImageUploadResponse])

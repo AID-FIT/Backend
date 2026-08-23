@@ -11,6 +11,13 @@ class ImageUploadResponse(BaseModel):
     analyzed: bool = False
 
 
+class PendingAnalysisResponse(BaseModel):
+    analyzed: int
+    failed: int
+    # 한 배치로 다 끝나지 않았다는 뜻. 호출부가 이어서 부를지 판단한다.
+    has_more: bool
+
+
 class UserProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
