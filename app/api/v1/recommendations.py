@@ -1,6 +1,9 @@
+import json
+import logging
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -13,6 +16,7 @@ from app.services.target_category import infer_target_category
 from app.services.user_service import UserService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # 홈 타일 목표 개수. 프론트가 2열 그리드라 짝수여야 마지막 줄이 비지 않는다.
 _HOME_TILE_COUNT = 8
@@ -22,6 +26,26 @@ _HOME_CANDIDATE_POOL = 30
 _HOME_FALLBACK_QUERY = "오늘 입기 좋은 데일리 코디를 추천해줘."
 
 _MAX_STYLE_KEYWORDS = 3
+
+# 홈 필터에서 받아 주는 값. 카탈로그(product_vectors)에 실제로 들어 있는 값과
+# 같아야 하므로 여기서 못박는다. 모르는 값은 400을 내지 않고 무시한다 —
+# 필터 하나 때문에 홈이 통째로 비는 것보다 낫다.
+_HOME_CATEGORIES = frozenset(
+    {"상의", "바지", "아우터", "신발", "가방", "모자", "원피스/스커트"}
+)
+_HOME_MOODS = frozenset(
+    {"casual", "street", "minimal", "sporty", "classic", "feminine", "cute", "vintage", "outdoor"}
+)
+_HOME_SEASONS = frozenset({"spring", "summer", "fall", "winter"})
+
+
+def _allowed(value: str, allowed: frozenset[str]) -> str | None:
+    normalized = (value or "").strip()
+    if normalized in allowed:
+        return normalized
+    # 무드·계절은 소문자 영문이라 대소문자만 다른 입력도 받아 준다.
+    lowered = normalized.lower()
+    return lowered if lowered in allowed else None
 
 
 def _build_home_query(
@@ -129,61 +153,178 @@ async def create_recommendation(
     return RecommendationResponse(**result)
 
 
-@router.get("/home", response_model=RecommendationResponse)
-async def get_home_recommendation(
-    prompt: str = "",
-    refresh_seed: int = 0,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> RecommendationResponse:
-    # Home cards reuse closet metadata and preference data as agent context.
+async def _build_home_request(
+    db: AsyncSession,
+    current_user: User,
+    prompt: str,
+    refresh_seed: int,
+    category: str,
+    mood: str,
+    season: str,
+) -> dict:
+    """홈 추천 한 건에 필요한 인자를 모은다.
+
+    `/home`과 `/home/stream`이 같은 조건으로 돌아야 한다. 한쪽에만 필터를
+    추가하면 스트리밍과 폴백이 서로 다른 결과를 주게 된다.
+    """
     preference = await UserService().get_preference(db, current_user)
     closet_service = ClosetService()
     closet_items = await closet_service.list_for_user(db, current_user)
     sizes = preference.sizes if preference else {}
     age_range = sizes.get("age_range") if isinstance(sizes, dict) else None
     closet_payload = [closet_service.to_agent_payload(item) for item in closet_items]
-    user_profile = {
-        "age_group": age_range,
-        "preferred_styles": preference.styles if preference else [],
-    }
+    preferred_styles = preference.styles if preference else []
+    user_profile = {"age_group": age_range, "preferred_styles": preferred_styles}
 
     query = _build_home_query(
         closet_items=closet_payload,
-        preferred_styles=preference.styles if preference else [],
+        preferred_styles=preferred_styles,
         age_range=age_range,
         prompt=prompt,
     )
 
-    result = await RecommendationService().create(
-        query=query,
-        user_id=current_user.id,
-        context={
-            "refresh_seed": max(refresh_seed, 0),
-            # 홈은 타일 그리드라 5칸을 채워야 한다. 후보를 5개만 뽑으면 LLM이
-            # 그중 마음에 드는 것만 골라 1~2개로 줄어든다. 넉넉히 뽑아 고르게 한다.
-            "limit": _HOME_CANDIDATE_POOL,
+    # 칩으로 고른 카테고리가 질의에서 추론한 값보다 우선한다. 사용자가 직접
+    # 누른 것이므로 추측이 이길 이유가 없다.
+    selected_category = _allowed(category, _HOME_CATEGORIES)
+    target_category = selected_category or infer_target_category(query)
+
+    context: dict = {
+        "refresh_seed": max(refresh_seed, 0),
+        # 홈은 타일 그리드라 8칸을 채워야 한다. 후보를 8개만 뽑으면 LLM이
+        # 그중 마음에 드는 것만 골라 1~2개로 줄어든다. 넉넉히 뽑아 고르게 한다.
+        "limit": _HOME_CANDIDATE_POOL,
+        "age_range": age_range,
+        "preferred_style": preferred_styles,
+        "closet_items": closet_payload,
+    }
+    if selected_category:
+        context["category"] = selected_category
+    selected_mood = _allowed(mood, _HOME_MOODS)
+    if selected_mood:
+        context["mood"] = selected_mood
+    selected_season = _allowed(season, _HOME_SEASONS)
+    if selected_season:
+        context["season"] = selected_season
+
+    return {
+        "applied_filters": {
+            "category": selected_category,
+            "mood": selected_mood,
+            "season": selected_season,
             "age_range": age_range,
-            "preferred_style": preference.styles if preference else [],
-            "closet_items": closet_payload,
+            "preferred_styles": list(preferred_styles),
+            "prompt": prompt.strip(),
         },
-        # Closet rows already contain VLM metadata; treating every owned image as
-        # a newly attached reference would exclude the whole closet from retrieval.
-        image_urls=[],
-        closet_items=closet_payload,
-        use_closet_style=True,
-        user_profile=user_profile,
-        # 홈 타일은 "사러 갈 만한 상품"을 보여주는 자리다. 검색 계획이 closet이나
-        # hybrid를 고르면 사용자가 이미 가진 옷이 타일로 올라온다. 그걸 막는다.
-        recommendation_target="musinsa",
-        lock_retrieval_target=True,
-        # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
-        # 된다. 타일이 같은 종류로만 차는 것을 막는다. 다만 "바지"처럼 종류를 찍어
-        # 검색했다면 섞는 쪽이 오히려 틀린 답이므로 그때는 끈다.
-        diversify_by_category=infer_target_category(query) is None,
-        max_recommendations=_HOME_TILE_COUNT,
+        "run_kwargs": {
+            "query": query,
+            "user_id": current_user.id,
+            "context": context,
+            # Closet rows already contain VLM metadata; treating every owned image as
+            # a newly attached reference would exclude the whole closet from retrieval.
+            "image_urls": [],
+            "closet_items": closet_payload,
+            "use_closet_style": True,
+            "user_profile": user_profile,
+            # 홈 타일은 "사러 갈 만한 상품"을 보여주는 자리다. 검색 계획이 closet이나
+            # hybrid를 고르면 사용자가 이미 가진 옷이 타일로 올라온다. 그걸 막는다.
+            "recommendation_target": "musinsa",
+            "lock_retrieval_target": True,
+            # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
+            # 된다. 타일이 같은 종류로만 차는 것을 막는다. 다만 "바지"처럼 종류를 찍어
+            # 검색했다면 섞는 쪽이 오히려 틀린 답이므로 그때는 끈다.
+            "diversify_by_category": target_category is None,
+            "max_recommendations": _HOME_TILE_COUNT,
+        },
+    }
+
+
+@router.get("/home", response_model=RecommendationResponse)
+async def get_home_recommendation(
+    prompt: str = "",
+    refresh_seed: int = 0,
+    category: str = "",
+    mood: str = "",
+    season: str = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RecommendationResponse:
+    request = await _build_home_request(
+        db, current_user, prompt, refresh_seed, category, mood, season
     )
-    return RecommendationResponse(**result)
+    result = await RecommendationService().create(**request["run_kwargs"])
+    return RecommendationResponse(
+        **result,
+        applied_filters={
+            **request["applied_filters"],
+            "result_count": len(result.get("recommendations") or []),
+        },
+    )
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.get("/home/stream")
+async def stream_home_recommendation(
+    prompt: str = "",
+    refresh_seed: int = 0,
+    category: str = "",
+    mood: str = "",
+    season: str = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """홈 추천을 만들면서 진행 상황을 흘린다.
+
+    `/home`과 같은 조건으로 돌고 결과도 같다. 다른 점은 13초를 기다리는 동안
+    어느 단계인지 보인다는 것뿐이다. 스트리밍이 막힌 환경을 위해 `/home`은
+    그대로 남겨 둔다.
+    """
+    request = await _build_home_request(
+        db, current_user, prompt, refresh_seed, category, mood, season
+    )
+
+    async def events():
+        service = RecommendationService()
+        try:
+            async for event in service.stream(**request["run_kwargs"]):
+                if event["type"] != "result":
+                    yield _sse(event)
+                    continue
+
+                response = event["response"]
+                yield _sse(
+                    {
+                        "type": "result",
+                        **response,
+                        "applied_filters": {
+                            **request["applied_filters"],
+                            "result_count": len(response.get("recommendations") or []),
+                        },
+                    }
+                )
+        except Exception:
+            # 헤더는 이미 나갔으므로 HTTP 상태로는 실패를 알릴 수 없다.
+            # 스트림 안에서 알려 주지 않으면 화면이 영원히 로딩에 머문다.
+            logger.exception("home recommendation stream failed")
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": "추천을 만드는 중에 문제가 생겼어요. 다시 시도해 주세요.",
+                }
+            )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # 프록시가 응답을 통째로 모았다가 보내면 스트리밍이 의미를 잃는다.
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/{recommendation_id}", response_model=RecommendationResponse)

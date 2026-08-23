@@ -116,6 +116,8 @@ class RagService:
                 limit=request.top_k,
                 filters=request.filters,
                 excluded_item_refs=excluded,
+                # 벡터 검색은 결정적이라 seed가 없으면 새로고침해도 같은 목록이 나온다.
+                refresh_seed=int(request.filters.get("refresh_seed") or 0),
             )
 
     async def search(

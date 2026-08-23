@@ -33,6 +33,7 @@ class PgVectorRagService:
         limit: int = 10,
         filters: dict[str, Any] | None = None,
         excluded_item_refs: set[str] | None = None,
+        refresh_seed: int = 0,
     ) -> list[dict]:
         if not query.strip():
             return []
@@ -58,15 +59,27 @@ class PgVectorRagService:
         result = await db.execute(statement, params)
         excluded = excluded_item_refs or set()
 
-        items: list[dict] = []
+        candidates: list[dict] = []
         for row in result.mappings():
             item = self._to_item(dict(row))
             if excluded.intersection({item["item_id"], item.get("product_url") or ""}):
                 continue
-            items.append(item)
-            if len(items) >= limit:
-                break
-        return items
+            candidates.append(item)
+
+        return self._rotate(candidates, limit, refresh_seed)[:limit]
+
+    def _rotate(self, candidates: list[dict], limit: int, refresh_seed: int) -> list[dict]:
+        """새로고침할 때마다 후보 풀 안에서 시작점을 옮긴다.
+
+        이 쿼리는 결정적이다. 같은 질의·같은 필터면 매번 같은 상위 N건이 나와,
+        새로고침을 눌러도 화면이 그대로였다. OFFSET으로 건너뛰면 누를수록
+        유사도가 낮은 상품만 남으므로, 이미 뽑아 둔 상위 후보 안에서 회전한다.
+        """
+        if refresh_seed <= 0 or not candidates:
+            return candidates
+
+        start = (refresh_seed * max(limit, 1)) % len(candidates)
+        return candidates[start:] + candidates[:start]
 
     def _effective_filters(self, query: str, filters: dict[str, Any]) -> dict[str, Any]:
         """카테고리가 정해지지 않았으면 질의에서 뽑는다.
@@ -84,7 +97,11 @@ class PgVectorRagService:
         return {**filters, "category": target}
 
     def _build_conditions(self, filters: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
-        """메타데이터 선필터. 벡터 검색 전에 후보를 좁힌다."""
+        """메타데이터 선필터. 벡터 검색 전에 후보를 좁힌다.
+
+        `style`과 `preferred_styles`는 여기서 다루지 않는다. `product_vectors`에
+        대응하는 컬럼이 없어 조건으로 만들 수 없고, 임베딩 질의 텍스트로만 쓰인다.
+        """
         conditions: list[str] = []
         params: dict[str, Any] = {}
 
@@ -99,6 +116,26 @@ class PgVectorRagService:
             conditions.append("(gender IS NULL OR gender = :gender OR gender = 'unisex')")
             params["gender"] = gender
 
+        mood = self._clean(filters.get("mood"))
+        if mood:
+            conditions.append(self._multi_value_condition("mood", "mood"))
+            params["mood"] = mood
+
+        color = self._clean(filters.get("color"))
+        if color:
+            conditions.append(self._multi_value_condition("color", "color"))
+            params["color"] = color
+
+        season = self._clean(filters.get("season") or filters.get("sense_of_season"))
+        # "all"은 사계절 상품이다. 카탈로그의 41%가 여기 속해, 계절을 고를 때
+        # 함께 허용하지 않으면 후보가 통째로 사라진다.
+        if season and season not in {"all", "all-season"}:
+            conditions.append(
+                f"({self._multi_value_condition('season', 'season')}"
+                " OR lower(season) IN ('all', 'all-season'))"
+            )
+            params["season"] = season
+
         price_max = self._to_int(filters.get("price_max") or filters.get("max_price"))
         if price_max is not None:
             conditions.append("(price IS NULL OR price <= :price_max)")
@@ -110,6 +147,16 @@ class PgVectorRagService:
             params["price_min"] = price_min
 
         return conditions, params
+
+    def _multi_value_condition(self, column: str, key: str) -> str:
+        """쉼표로 이어진 다중값 컬럼에서 한 값을 찾는다.
+
+        이 컬럼들은 "casual, street", "black, white", "spring, fall"처럼 여러 값을
+        한 문자열에 담고 있다. `= 'casual'`로는 하나도 걸리지 않는다.
+        `LIKE '%casual%'`은 반대로 다른 낱말 안에 든 조각까지 잡는다
+        ("red"가 "covered"에). 양끝에 구분자를 붙여 낱말 경계를 만든다.
+        """
+        return f"', ' || lower({column}) || ',' LIKE '%, ' || :{key} || ',%'"
 
     def _to_item(self, row: dict) -> dict:
         similarity = float(row.get("similarity") or 0.0)

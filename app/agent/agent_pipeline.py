@@ -1,6 +1,9 @@
+from collections.abc import AsyncIterator
+
 from langgraph.graph import END, StateGraph
 
 from app.agent.nodes import AgentNodes
+from app.agent.progress import describe_step
 from app.agent.state import AgentState, ChatHistoryMessage
 
 
@@ -157,7 +160,7 @@ class AidFitAgentPipeline:
         graph.add_edge("error_response", END)
         return graph.compile()
 
-    async def run(
+    def _build_initial_state(
         self,
         query: str,
         user_id: str,
@@ -177,8 +180,7 @@ class AidFitAgentPipeline:
         previous_shown_item_refs: list[str] | None = None,
         previous_rag_query: str | None = None,
         previous_retrieval_target: str | None = None,
-        return_trace: bool = False,
-    ) -> dict:
+    ) -> AgentState:
         # Keep old single-image callers compatible with the new multi-image path.
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
         state: AgentState = {
@@ -211,47 +213,94 @@ class AidFitAgentPipeline:
             "fallback_count": 0,
             "error": None,
         }
+        return state
+
+    def _build_trace_result(
+        self,
+        result: AgentState,
+        query: str,
+        recommendation_target: str = "musinsa",
+        previous_shown_item_refs: list[str] | None = None,
+    ) -> dict:
+        response = result["final_response"]
+        current_shown_item_refs = _recommendation_item_refs(response)
+        # An unseen-only request can fall through from an exhausted reuse
+        # cache to fresh RAG while retrieval_action still says "reuse".
+        # The scope, rather than the original action, determines whether
+        # previously shown refs must stay excluded on following turns.
+        preserve_shown_history = bool(result.get("rag_reused")) or (
+            result.get("candidate_scope") == "unseen"
+        )
+        shown_item_refs = list(
+            dict.fromkeys(
+                [
+                    *((previous_shown_item_refs or []) if preserve_shown_history else []),
+                    *current_shown_item_refs,
+                ]
+            )
+        )
+        candidate_pool = (
+            result.get("candidate_pool", [])
+            if result.get("intent") == "fashion_service"
+            else []
+        )
+        return {
+            "response": response,
+            "vlm_items": result.get("vlm_items", []),
+            "ranked_items": result.get("ranked_items", []),
+            "rag_items": result.get("rag_results", []),
+            "candidate_pool": candidate_pool,
+            "shown_item_refs": shown_item_refs,
+            "retrieval_target": result.get("retrieval_target", recommendation_target),
+            "intent": result.get("intent"),
+            "intent_reason": result.get("intent_reason"),
+            "resolved_query": result.get("resolved_query", query),
+            "rag_query": result.get("rag_query"),
+            "retrieval_action": result.get("retrieval_action"),
+            "candidate_scope": result.get("candidate_scope", "all"),
+            "retrieval_reason": result.get("retrieval_reason"),
+            "rag_reused": result.get("rag_reused", False),
+            "selected_rag_item_refs": result.get("selected_rag_item_refs", []),
+            "error": result.get("error"),
+        }
+
+    async def run(self, return_trace: bool = False, **kwargs) -> dict:
+        state = self._build_initial_state(**kwargs)
         result = await self.graph.ainvoke(state)
         if return_trace:
-            response = result["final_response"]
-            current_shown_item_refs = _recommendation_item_refs(response)
-            # An unseen-only request can fall through from an exhausted reuse
-            # cache to fresh RAG while retrieval_action still says "reuse".
-            # The scope, rather than the original action, determines whether
-            # previously shown refs must stay excluded on following turns.
-            preserve_shown_history = bool(result.get("rag_reused")) or (
-                result.get("candidate_scope") == "unseen"
+            return self._build_trace_result(
+                result,
+                query=kwargs["query"],
+                recommendation_target=kwargs.get("recommendation_target", "musinsa"),
+                previous_shown_item_refs=kwargs.get("previous_shown_item_refs"),
             )
-            shown_item_refs = list(
-                dict.fromkeys(
-                    [
-                        *((previous_shown_item_refs or []) if preserve_shown_history else []),
-                        *current_shown_item_refs,
-                    ]
-                )
-            )
-            candidate_pool = (
-                result.get("candidate_pool", [])
-                if result.get("intent") == "fashion_service"
-                else []
-            )
-            return {
-                "response": response,
-                "vlm_items": result.get("vlm_items", []),
-                "ranked_items": result.get("ranked_items", []),
-                "rag_items": result.get("rag_results", []),
-                "candidate_pool": candidate_pool,
-                "shown_item_refs": shown_item_refs,
-                "retrieval_target": result.get("retrieval_target", recommendation_target),
-                "intent": result.get("intent"),
-                "intent_reason": result.get("intent_reason"),
-                "resolved_query": result.get("resolved_query", query),
-                "rag_query": result.get("rag_query"),
-                "retrieval_action": result.get("retrieval_action"),
-                "candidate_scope": result.get("candidate_scope", "all"),
-                "retrieval_reason": result.get("retrieval_reason"),
-                "rag_reused": result.get("rag_reused", False),
-                "selected_rag_item_refs": result.get("selected_rag_item_refs", []),
-                "error": result.get("error"),
-            }
         return result["final_response"]
+
+    async def stream(self, **kwargs) -> AsyncIterator[dict]:
+        """노드가 끝날 때마다 진행 상황을, 마지막에 결과를 흘린다.
+
+        사용자는 13초를 기다리는 동안 스켈레톤만 봤다. 어디까지 왔는지
+        알려주려면 그래프가 도는 중간에 내보낼 수 있어야 한다.
+        """
+        state = self._build_initial_state(**kwargs)
+        # astream은 각 노드가 바꾼 부분만 준다. 진행 문구가 참조할 수 있도록
+        # 여기서 하나로 합쳐 둔다.
+        merged: dict = dict(state)
+
+        async for update in self.graph.astream(state, stream_mode="updates"):
+            for node_name, delta in update.items():
+                if isinstance(delta, dict):
+                    merged.update(delta)
+                step = describe_step(node_name, merged)
+                if step is not None:
+                    yield {"type": "step", **step}
+
+        yield {
+            "type": "result",
+            **self._build_trace_result(
+                merged,  # type: ignore[arg-type]
+                query=kwargs["query"],
+                recommendation_target=kwargs.get("recommendation_target", "musinsa"),
+                previous_shown_item_refs=kwargs.get("previous_shown_item_refs"),
+            ),
+        }

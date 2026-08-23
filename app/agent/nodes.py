@@ -394,6 +394,7 @@ class AgentNodes:
             "sense_of_season",
             "category",
             "color",
+            "mood",
             "gender",
         ):
             if key in context:

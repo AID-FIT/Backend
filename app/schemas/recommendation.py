@@ -114,7 +114,31 @@ class AgentResponse(BaseModel):
     style_guide: StyleGuide | None = None
 
 
-RecommendationResponse = AgentResponse
+class AppliedFilters(BaseModel):
+    """이번 추천에 실제로 걸린 조건.
+
+    화면이 "무엇으로 찾았는지"를 사용자에게 보여주기 위한 것이다. 조건을
+    되짚을 수 없으면 결과가 왜 이런지 알 방법이 없다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str | None = None
+    mood: str | None = None
+    season: str | None = None
+    age_range: str | None = None
+    preferred_styles: list[str] = Field(default_factory=list)
+    prompt: str = ""
+    result_count: int = 0
+
+
+class RecommendationResponse(AgentResponse):
+    """HTTP 응답. 에이전트 계약(AgentResponse)에 화면용 정보를 얹는다.
+
+    AgentResponse는 LLM 출력 검증에도 쓰이므로 그쪽은 건드리지 않는다.
+    """
+
+    applied_filters: AppliedFilters | None = None
 
 
 class FeedbackEventCreate(BaseModel):

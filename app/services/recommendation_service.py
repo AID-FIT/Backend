@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,6 +62,21 @@ class RecommendationService:
             previous_retrieval_target=previous_retrieval_target,
             return_trace=return_trace,
         )
+
+    def stream(self, **kwargs) -> AsyncIterator[dict]:
+        """진행 이벤트를 흘리며 추천을 만든다.
+
+        `create`와 같은 인자를 받되 결과를 한 번에 돌려주지 않는다.
+        `return_trace`는 받지 않는다 — 스트림의 마지막 이벤트가 항상 트레이스다.
+        """
+        normalized_image_urls = kwargs.pop("image_urls", None) or (
+            [kwargs["image_url"]] if kwargs.get("image_url") else []
+        )
+        kwargs["image_urls"] = normalized_image_urls
+        kwargs["image_url"] = kwargs.get("image_url") or (
+            normalized_image_urls[0] if normalized_image_urls else None
+        )
+        return self.pipeline.stream(**kwargs)
 
     async def create_and_persist(
         self,

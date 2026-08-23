@@ -199,3 +199,100 @@ def test_requested_tile_count_reaches_the_llm() -> None:
 
 def test_chat_leaves_the_count_to_the_llm_default() -> None:
     assert run_pipeline()["max_recommendations"] is None
+
+
+def build_home(**overrides) -> dict:
+    """홈 엔드포인트가 파이프라인에 넘길 인자를 만든다. DB는 더블로 대체한다."""
+    import asyncio as _asyncio
+
+    from app.api.v1 import recommendations as home_api
+
+    class StubPreference:
+        styles = ["스트릿", "캐주얼"]
+        sizes = {"age_range": "20대"}
+
+    class StubUserService:
+        async def get_preference(self, _db, _user):
+            return StubPreference()
+
+    class StubClosetService:
+        async def list_for_user(self, _db, _user):
+            return []
+
+        def to_agent_payload(self, item):
+            return item
+
+    class StubUser:
+        id = "user_001"
+
+    original_user_service = home_api.UserService
+    original_closet_service = home_api.ClosetService
+    home_api.UserService = StubUserService
+    home_api.ClosetService = StubClosetService
+    try:
+        kwargs = {"prompt": "", "refresh_seed": 0, "category": "", "mood": "", "season": ""}
+        kwargs.update(overrides)
+        return _asyncio.run(home_api._build_home_request(None, StubUser(), **kwargs))
+    finally:
+        home_api.UserService = original_user_service
+        home_api.ClosetService = original_closet_service
+
+
+def test_category_chip_becomes_a_real_filter() -> None:
+    # 칩을 검색어에 문자열로 합쳐 보내면 벡터 유사도에 묻힌다. 필터로 박아야 한다.
+    request = build_home(category="바지")
+
+    assert request["run_kwargs"]["context"]["category"] == "바지"
+
+
+def test_unknown_category_is_ignored_rather_than_rejected() -> None:
+    # 필터 하나 때문에 홈이 통째로 비는 것보다 무시하는 편이 낫다.
+    request = build_home(category="양말")
+
+    assert "category" not in request["run_kwargs"]["context"]
+    assert request["applied_filters"]["category"] is None
+
+
+def test_choosing_a_category_turns_off_diversification() -> None:
+    # "바지"를 골랐는데 여러 종류로 섞어 주면 고른 의미가 없다.
+    assert build_home(category="바지")["run_kwargs"]["diversify_by_category"] is False
+
+
+def test_no_category_keeps_diversification_on() -> None:
+    assert build_home()["run_kwargs"]["diversify_by_category"] is True
+
+
+def test_mood_and_season_reach_the_context() -> None:
+    request = build_home(mood="STREET", season="Summer")
+
+    assert request["run_kwargs"]["context"]["mood"] == "street"
+    assert request["run_kwargs"]["context"]["season"] == "summer"
+
+
+def test_unknown_mood_and_season_are_dropped() -> None:
+    request = build_home(mood="힙합", season="장마")
+
+    assert "mood" not in request["run_kwargs"]["context"]
+    assert "season" not in request["run_kwargs"]["context"]
+
+
+def test_applied_filters_report_what_was_used() -> None:
+    # 사용자가 결과의 근거를 볼 수 있어야 한다.
+    applied = build_home(category="바지", season="summer", prompt="청바지")["applied_filters"]
+
+    assert applied["category"] == "바지"
+    assert applied["season"] == "summer"
+    assert applied["prompt"] == "청바지"
+    assert applied["age_range"] == "20대"
+    assert applied["preferred_styles"] == ["스트릿", "캐주얼"]
+
+
+def test_refresh_seed_is_carried_into_the_search() -> None:
+    assert build_home(refresh_seed=3)["run_kwargs"]["context"]["refresh_seed"] == 3
+
+
+def test_chip_category_beats_the_inferred_one() -> None:
+    # "상의"를 검색창에 적고 "바지" 칩을 눌렀다면 누른 쪽이 이겨야 한다.
+    request = build_home(category="바지", prompt="상의 추천해줘")
+
+    assert request["run_kwargs"]["context"]["category"] == "바지"
