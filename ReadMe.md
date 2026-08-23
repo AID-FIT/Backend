@@ -2,9 +2,9 @@
 
 AID-FIT 백엔드는 React Native 프론트엔드에서 업로드한 의류 이미지와 텍스트 요청을 받아 VLM 분석, RAG 검색, LangGraph 기반 에이전트 추론을 거쳐 코디 추천 결과를 반환하는 FastAPI 서버입니다.
 
-현재 구현은 팀별 Vision/RAG/LLM 모듈이 붙기 전에도 프론트엔드 연동을 진행할 수 있도록 mock 서비스를 기본값으로 제공합니다(`USE_MOCK_AI=true`). 이후 `app/services/rag_service.py`, `app/services/llm_service.py` 내부만 실제 구현으로 교체하면 됩니다.
+현재 구현은 외부 AI 없이도 프론트엔드 연동을 진행할 수 있도록 mock 서비스를 기본값으로 제공하며(`USE_MOCK_AI=true`), 운영 모드에서는 Gemini VLM/LLM과 로컬 ChromaDB 상품 검색을 사용합니다.
 
-VLM(`app/services/vlm_service.py`)과 LLM은 Gemini 연동이 완료되어 있습니다. `USE_MOCK_AI=false` + `GEMINI_API_KEY` 설정 시 실제 모델을 호출합니다.
+VLM(`app/services/vlm_service.py`)과 LLM은 Gemini에, RAG는 `data/chromadb_final`의 ChromaDB에 연결되어 있습니다. `USE_MOCK_AI=false` + `GEMINI_API_KEY` 설정 시 실제 파이프라인을 사용합니다.
 
 ### VLM 동작 방식
 
@@ -166,9 +166,32 @@ scripts/k3s/deploy.sh
 | `VLM_MAX_IMAGE_BYTES` | 분석 허용 이미지 최대 크기 | `8388608` |
 | `VLM_MAX_ITEMS_PER_IMAGE` | 코디 사진 1장에서 추출할 아이템 최대 개수 | `8` |
 | `RAG_CANDIDATE_CACHE_TTL_SECONDS` | 채팅 후보 풀 재사용 TTL. `0` 이하면 만료하지 않음 | `900` |
+| `RAG_VECTOR_DB_PATH` | 영속 ChromaDB 디렉터리 | `data/chromadb_final` |
+| `RAG_COLLECTION_NAME` | 상품 검색 컬렉션 이름 | `musinsa` |
+| `RAG_EMBEDDING_MODEL` | 인덱스 생성에 사용한 임베딩 모델 | `jhgan/ko-sroberta-multitask` |
+| `RAG_EMBEDDING_CACHE_PATH` | Hugging Face 임베딩 모델 캐시 디렉터리 | `data/huggingface` |
+| `RAG_EMBEDDING_LOCAL_FILES_ONLY` | 로컬 모델 파일만 허용할지 여부 | `false` |
 | `GOOGLE_CLIENT_IDS` | 허용할 Google OAuth client ID 목록 | `ios-client-id,web-client-id` |
 | `APPLE_CLIENT_IDS` | 허용할 Apple Bundle ID 또는 Services ID 목록 | `com.aidfit.app` |
 | `AUTH_ALLOW_UNVERIFIED_TOKENS` | 로컬 테스트용 서명 검증 우회. 운영 금지 | `false` |
+
+### Vector DB
+
+실제 상품 검색을 사용하려면 `USE_MOCK_AI=false`로 설정하고 다음 구조로 ChromaDB를 배치합니다.
+
+```text
+data/
+  chromadb_final/
+    chroma.sqlite3
+    <segment-id>/
+      data_level0.bin
+      header.bin
+      index_metadata.pickle
+      length.bin
+      link_lists.bin
+```
+
+`data/chromadb_final`은 런타임 데이터이므로 Git과 Docker 빌드 컨텍스트에서 제외됩니다. 배포 환경에서는 같은 경로에 별도 볼륨이나 데이터 아티팩트를 마운트해야 합니다. 첫 검색 시 임베딩 모델이 로컬 캐시에 없고 `RAG_EMBEDDING_LOCAL_FILES_ONLY=false`이면 Hugging Face에서 모델을 내려받습니다.
 
 ## API Spec
 

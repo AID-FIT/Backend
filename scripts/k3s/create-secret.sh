@@ -36,6 +36,11 @@ kubectl create secret generic "${SECRET_NAME}" \
   --from-literal=PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:12570}" \
   --from-literal=CORS_ORIGINS="${CORS_ORIGINS:-*}" \
   --from-literal=USE_MOCK_AI="${USE_MOCK_AI:-true}" \
+  --from-literal=RAG_VECTOR_DB_PATH="${RAG_VECTOR_DB_PATH:-/app/data/chromadb_final}" \
+  --from-literal=RAG_COLLECTION_NAME="${RAG_COLLECTION_NAME:-musinsa}" \
+  --from-literal=RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-jhgan/ko-sroberta-multitask}" \
+  --from-literal=RAG_EMBEDDING_CACHE_PATH="${RAG_EMBEDDING_CACHE_PATH:-/app/data/huggingface}" \
+  --from-literal=RAG_EMBEDDING_LOCAL_FILES_ONLY="${RAG_EMBEDDING_LOCAL_FILES_ONLY:-false}" \
   --from-literal=GOOGLE_CLIENT_IDS="${GOOGLE_CLIENT_IDS:-}" \
   --from-literal=APPLE_CLIENT_IDS="${APPLE_CLIENT_IDS:-}" \
   --from-literal=AUTH_ALLOW_UNVERIFIED_TOKENS="${AUTH_ALLOW_UNVERIFIED_TOKENS:-false}" \

@@ -134,6 +134,11 @@ jobs:
             --from-literal=PUBLIC_BASE_URL="${{ secrets.PUBLIC_BASE_URL }}" \
             --from-literal=CORS_ORIGINS="${{ secrets.CORS_ORIGINS }}" \
             --from-literal=USE_MOCK_AI="${{ secrets.USE_MOCK_AI }}" \
+            --from-literal=RAG_VECTOR_DB_PATH="/app/data/chromadb_final" \
+            --from-literal=RAG_COLLECTION_NAME="musinsa" \
+            --from-literal=RAG_EMBEDDING_MODEL="jhgan/ko-sroberta-multitask" \
+            --from-literal=RAG_EMBEDDING_CACHE_PATH="/app/data/huggingface" \
+            --from-literal=RAG_EMBEDDING_LOCAL_FILES_ONLY="false" \
             --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
             --from-literal=VLM_MODEL="${{ secrets.VLM_MODEL }}" \
             --from-literal=GOOGLE_CLIENT_IDS="${{ secrets.GOOGLE_CLIENT_IDS }}" \
@@ -167,6 +172,7 @@ jobs:
       - name: Apply Backend manifests
         run: |
           kubectl apply -f k8s/backend-uploads-pvc.yaml
+          kubectl apply -f k8s/backend-rag-pvc.yaml
           kubectl apply -f k8s/backend-service.yaml
           kubectl apply -f k8s/backend-deployment.yaml
 

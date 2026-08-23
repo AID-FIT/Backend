@@ -1,3 +1,5 @@
+import asyncio
+
 from app.core.config import settings
 from app.schemas.ai import RAGRequest, RAGResponse
 
@@ -50,8 +52,45 @@ class RagService:
         }
 
     async def _external_search_request(self, request: RAGRequest) -> dict:
-        # Future adapter boundary: replace this method with POST /rag/search.
-        return await self._mock_search_request(request)
+        excluded_item_refs = {
+            str(item_ref).strip()
+            for item_ref in request.filters.get("excluded_item_refs") or []
+            if str(item_ref).strip()
+        }
+        refresh_seed = int(request.filters.get("refresh_seed") or 0)
+
+        if request.retrieval_target == "closet":
+            items = self._search_closet(request, limit=request.top_k, refresh_seed=refresh_seed)
+        elif request.retrieval_target == "musinsa":
+            items = await self._search_vector_catalog(request)
+        else:
+            closet_items = self._search_closet(
+                request,
+                limit=request.top_k,
+                refresh_seed=refresh_seed,
+            )
+            catalog_items = await self._search_vector_catalog(request)
+            items = self._interleave(closet_items, catalog_items)[: request.top_k]
+
+        normalized_items = [
+            self._normalize_item(item)
+            for item in items
+            if not excluded_item_refs.intersection(
+                self._item_refs(item, ("item_id", "product_url", "image_url"))
+            )
+        ]
+        return {
+            "items": normalized_items,
+            "message": "success" if normalized_items else "검색 결과가 없습니다.",
+        }
+
+    async def _search_vector_catalog(self, request: RAGRequest) -> list[dict]:
+        # Import lazily so mock-only development does not require the vector stack.
+        from rag_service_final import search as vector_search
+
+        musinsa_request = request.model_copy(update={"retrieval_target": "musinsa"})
+        response = await asyncio.to_thread(vector_search, musinsa_request.model_dump())
+        return response.model_dump()["items"]
 
     async def search(
         self,

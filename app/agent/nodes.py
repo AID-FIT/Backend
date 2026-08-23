@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from app.agent.state import AgentState, ChatHistoryMessage
 from app.schemas.ai import (
+    DEFAULT_RAG_TOP_K,
     AgentError,
     IntentClassification,
     QueryRefinement,
@@ -351,7 +352,7 @@ class AgentNodes:
             closet_items=state.get("closet_items") or [],
             use_closet_style=state.get("use_closet_style", True),
             filters=filters,
-            top_k=int(context.get("limit") or context.get("top_k") or 10),
+            top_k=int(context.get("limit") or context.get("top_k") or DEFAULT_RAG_TOP_K),
         )
         state["rag_query"] = query
         state["rag_request"] = request.model_dump()
@@ -452,7 +453,10 @@ class AgentNodes:
         rag_request = {
             **(state.get("rag_request") or {}),
             "filters": filters,
-            "top_k": max(int((state.get("rag_request") or {}).get("top_k") or 10), 20),
+            "top_k": max(
+                int((state.get("rag_request") or {}).get("top_k") or DEFAULT_RAG_TOP_K),
+                20,
+            ),
         }
 
         try:
