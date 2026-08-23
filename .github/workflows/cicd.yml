@@ -134,6 +134,8 @@ jobs:
             --from-literal=PUBLIC_BASE_URL="${{ secrets.PUBLIC_BASE_URL }}" \
             --from-literal=CORS_ORIGINS="${{ secrets.CORS_ORIGINS }}" \
             --from-literal=USE_MOCK_AI="${{ secrets.USE_MOCK_AI }}" \
+            --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+            --from-literal=VLM_MODEL="${{ secrets.VLM_MODEL }}" \
             --from-literal=GOOGLE_CLIENT_IDS="${{ secrets.GOOGLE_CLIENT_IDS }}" \
             --from-literal=APPLE_CLIENT_IDS="${{ secrets.APPLE_CLIENT_IDS }}" \
             --from-literal=AUTH_ALLOW_UNVERIFIED_TOKENS="${{ secrets.AUTH_ALLOW_UNVERIFIED_TOKENS }}" \

@@ -2,7 +2,25 @@
 
 AID-FIT 백엔드는 React Native 프론트엔드에서 업로드한 의류 이미지와 텍스트 요청을 받아 VLM 분석, RAG 검색, LangGraph 기반 에이전트 추론을 거쳐 코디 추천 결과를 반환하는 FastAPI 서버입니다.
 
-현재 구현은 팀별 Vision/RAG/LLM 모듈이 붙기 전에도 프론트엔드 연동을 진행할 수 있도록 mock 서비스를 기본값으로 제공합니다. 이후 `app/services/vlm_service.py`, `app/services/rag_service.py`, `app/services/llm_service.py` 내부만 실제 구현으로 교체하면 됩니다.
+현재 구현은 팀별 Vision/RAG/LLM 모듈이 붙기 전에도 프론트엔드 연동을 진행할 수 있도록 mock 서비스를 기본값으로 제공합니다(`USE_MOCK_AI=true`). 이후 `app/services/rag_service.py`, `app/services/llm_service.py` 내부만 실제 구현으로 교체하면 됩니다.
+
+VLM(`app/services/vlm_service.py`)과 LLM은 Gemini 연동이 완료되어 있습니다. `USE_MOCK_AI=false` + `GEMINI_API_KEY` 설정 시 실제 모델을 호출합니다.
+
+### VLM 동작 방식
+
+이미지 분석은 호출 경로에 따라 두 가지 모드로 동작합니다.
+
+| 경로 | 메서드 | 모드 |
+| --- | --- | --- |
+| 추천 요청 (`POST /recommendations`) | `analyze_many()` | **멀티 아이템** — 코디 사진 1장에서 상의/하의/신발 등을 각각 분리해 반환 |
+| 옷장 등록 (`POST /images`) | `analyze()` | **단일 아이템** — 사진 1장 = 옷 1벌 |
+
+- 이미지당 API 호출은 1회이며, 멀티 아이템이어도 호출 수는 늘지 않습니다.
+- 한 이미지에서 추출할 아이템 개수는 `VLM_MAX_ITEMS_PER_IMAGE`로 제한됩니다.
+- 최상위 `is_fashion_item`은 **모든 입력 이미지가 각각 최소 1개의 의류를 포함할 때만** `true`입니다.
+- `price`, `product_url`은 업로드 사진에서 알 수 없는 값이므로 항상 `null`로 고정됩니다.
+
+옷장 등록을 멀티 아이템으로 확장하려면 `closet_items.image_id`의 unique 제약 해제와 아이템별 썸네일 크롭이 선행되어야 합니다.
 
 ## Tech Stack
 
@@ -86,6 +104,12 @@ scripts/k3s/deploy.sh
 | `PUBLIC_BASE_URL` | 업로드 URL 생성 기준 | `http://localhost:8000`, `https://api.aidfit.o-r.kr` |
 | `CORS_ORIGINS` | 프론트엔드 허용 Origin 목록 | `http://localhost:8081,http://localhost:19006,http://devse.kr:12571` |
 | `USE_MOCK_AI` | mock AI 사용 여부 | `true` |
+| `GEMINI_API_KEY` | Gemini API 키. LLM과 VLM이 함께 사용 | `AIza...` |
+| `VLM_MODEL` | 이미지 분석 모델. 비우면 `GEMINI_MODEL` 사용 | `gemini-2.5-flash` |
+| `VLM_TIMEOUT_SECONDS` | 이미지 다운로드 및 분석 타임아웃 | `30` |
+| `VLM_MAX_CONCURRENCY` | 이미지 동시 분석 개수 | `4` |
+| `VLM_MAX_IMAGE_BYTES` | 분석 허용 이미지 최대 크기 | `8388608` |
+| `VLM_MAX_ITEMS_PER_IMAGE` | 코디 사진 1장에서 추출할 아이템 최대 개수 | `8` |
 | `GOOGLE_CLIENT_IDS` | 허용할 Google OAuth client ID 목록 | `ios-client-id,web-client-id` |
 | `APPLE_CLIENT_IDS` | 허용할 Apple Bundle ID 또는 Services ID 목록 | `com.aidfit.app` |
 | `AUTH_ALLOW_UNVERIFIED_TOKENS` | 로컬 테스트용 서명 검증 우회. 운영 금지 | `false` |
