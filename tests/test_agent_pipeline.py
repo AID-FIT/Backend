@@ -581,6 +581,7 @@ def test_context_filters_still_win_over_outfit_inference() -> None:
     filters = rag.calls[0]["filters"]
     assert filters["category"] == "신발"
     assert filters["season"] == "fall"
+
 def test_chat_history_reaches_final_response_generation() -> None:
     # 후속 질문("더 저렴한 걸로")은 직전 대화가 있어야 이해된다.
     pipeline, _, _, llm = build_pipeline()
@@ -606,3 +607,4 @@ def test_chat_history_defaults_to_empty_for_one_off_requests() -> None:
     asyncio.run(pipeline.run(query="화이트 니트랑 어울리는 바지 추천해줘", user_id="user_001"))
 
     assert llm.calls[0]["chat_history"] == []
+
