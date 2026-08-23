@@ -5,7 +5,7 @@ import pytest
 
 from app.agent.nodes import AgentNodes
 from app.core import config as config_module
-from app.services.llm_service import LlmService
+from app.services.llm_service import MAX_RECOMMENDATIONS, LlmService
 from tests.test_agent_pipeline import FakeLlmService
 
 
@@ -236,3 +236,67 @@ def test_query_refiner_calls_llm_when_vlm_items_exist() -> None:
     assert len(llm.refine_calls) == 1
     assert llm.refine_calls[0]["vlm_items"][0]["material"] == "knit"
     assert result["resolved_query"] == "화이트 니트에 어울리는 블랙 와이드 팬츠"
+
+
+class RecordingLlmService(LlmService):
+    """compose_recommendation이 만든 payload만 붙잡는다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.payload: dict | None = None
+
+    def _build_gemini_payload(self, *args, **kwargs):  # type: ignore[override]
+        self.payload = super()._build_gemini_payload(*args, **kwargs)
+        return self.payload
+
+
+def ranked(count: int) -> list[dict]:
+    return [
+        {
+            "item_id": f"item_{index}",
+            "source": "musinsa",
+            "item_name": f"상품 {index}",
+            "category": "상의",
+            "image_url": f"https://image.example/{index}.jpg",
+            "product_url": f"https://www.musinsa.com/products/{index}",
+            "final_score": 1.0 - index * 0.01,
+        }
+        for index in range(count)
+    ]
+
+
+def test_mock_recommendation_honors_the_requested_count() -> None:
+    service = LlmService()
+    service.use_mock_ai = True
+
+    response = asyncio.run(
+        service.compose_recommendation(
+            "오늘 뭐 입지", [], ranked(12), "musinsa", max_recommendations=7
+        )
+    )
+
+    assert len(response["recommendations"]) == 7
+
+
+def test_recommendation_defaults_to_the_chat_cap() -> None:
+    service = LlmService()
+    service.use_mock_ai = True
+
+    response = asyncio.run(
+        service.compose_recommendation("오늘 뭐 입지", [], ranked(12), "musinsa")
+    )
+
+    assert len(response["recommendations"]) == MAX_RECOMMENDATIONS
+
+
+def test_prompt_carries_the_target_count_and_enough_candidates() -> None:
+    service = RecordingLlmService()
+
+    payload = service._build_gemini_payload(
+        "오늘 뭐 입지", [], ranked(30), "musinsa", max_recommendations=7
+    )
+    prompt = json.loads(payload["contents"][0]["parts"][0]["text"])
+
+    assert prompt["target_recommendation_count"] == 7
+    # 7개를 고르라면서 후보를 8개만 주면 사실상 선택지가 없다.
+    assert len(prompt["candidate_items"]) >= 14

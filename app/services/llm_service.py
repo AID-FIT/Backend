@@ -175,10 +175,15 @@ class LlmService:
         use_closet_style: bool = True,
         user_profile: dict | None = None,
         chat_history: list[dict] | None = None,
+        max_recommendations: int | None = None,
     ) -> dict:
+        # 홈 타일처럼 더 많은 카드를 채워야 하는 화면은 상한을 올려 잡는다.
+        limit = max(1, max_recommendations or MAX_RECOMMENDATIONS)
         # Always return the same public contract regardless of mock or real LLM.
         if self.use_mock_ai:
-            response = await self._mock_compose_recommendation(query, vlm_items, ranked_items, retrieval_target)
+            response = await self._mock_compose_recommendation(
+                query, vlm_items, ranked_items, retrieval_target, limit
+            )
         else:
             response = await self._external_compose_recommendation(
                 query,
@@ -189,6 +194,7 @@ class LlmService:
                 use_closet_style=use_closet_style,
                 user_profile=user_profile or {},
                 chat_history=chat_history or [],
+                max_recommendations=limit,
             )
         return AgentResponse.model_validate(response).model_dump()
 
@@ -198,13 +204,14 @@ class LlmService:
         vlm_items: list[dict],
         ranked_items: list[dict],
         retrieval_target: str = "musinsa",
+        max_recommendations: int = MAX_RECOMMENDATIONS,
     ) -> dict:
         if not ranked_items:
             return self._empty_response()
 
         base_item = vlm_items[0] if vlm_items else {}
         recommendations = []
-        for product in ranked_items[:5]:
+        for product in ranked_items[:max_recommendations]:
             category = product.get("category")
             base_color = base_item.get("color") or "사용자 스타일"
             base_category = base_item.get("category") or "아이템"
@@ -246,6 +253,7 @@ class LlmService:
         use_closet_style: bool = True,
         user_profile: dict | None = None,
         chat_history: list[dict] | None = None,
+        max_recommendations: int = MAX_RECOMMENDATIONS,
     ) -> dict:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -254,7 +262,9 @@ class LlmService:
             return self._empty_response()
 
         # Gemini receives only retrieved candidates so it cannot invent products.
-        candidate_items = self._candidate_items(ranked_items)
+        # 뽑을 개수만큼만 보여주면 LLM이 고를 여지가 없다. 넉넉히 준다.
+        candidate_limit = max(MAX_LLM_CANDIDATES, max_recommendations * 2)
+        candidate_items = self._candidate_items(ranked_items, candidate_limit)
         payload = self._build_gemini_payload(
             query,
             vlm_items,
@@ -264,6 +274,7 @@ class LlmService:
             use_closet_style=use_closet_style,
             user_profile=user_profile or {},
             chat_history=chat_history or [],
+            max_recommendations=max_recommendations,
         )
         url = f"{settings.gemini_base_url.rstrip('/')}/models/{settings.gemini_model}:generateContent"
         headers = {
@@ -277,7 +288,7 @@ class LlmService:
 
         content = self._extract_gemini_text(response.json())
         parsed = self._parse_json_object(content)
-        normalized = self._normalize_llm_response(parsed, candidate_items)
+        normalized = self._normalize_llm_response(parsed, candidate_items, max_recommendations)
         return AgentResponse.model_validate(normalized).model_dump()
 
     async def _generate_structured(
@@ -675,10 +686,14 @@ class LlmService:
         use_closet_style: bool = True,
         user_profile: dict | None = None,
         chat_history: list[dict] | None = None,
+        max_recommendations: int = MAX_RECOMMENDATIONS,
     ) -> dict[str, Any]:
-        candidate_items = self._candidate_items(ranked_items)
+        candidate_limit = max(MAX_LLM_CANDIDATES, max_recommendations * 2)
+        candidate_items = self._candidate_items(ranked_items, candidate_limit)
         prompt = {
             "user_query": query,
+            # 목표 개수를 알려주지 않으면 모델이 두어 개만 고르고 끝낸다.
+            "target_recommendation_count": max_recommendations,
             # 시간순 이전 대화. "더 저렴한 걸로" 같은 후속 질문을 이해하는 데 쓴다.
             "chat_history": chat_history or [],
             "retrieval_target": retrieval_target,
@@ -715,6 +730,8 @@ class LlmService:
             "Do not use markdown. Recommend only products present in candidate_items. "
             "Do not invent product names, brands, prices, image URLs, or product URLs. "
             "Use closet_items, use_closet_style, user_profile, and vlm_items only as styling context. "
+            "Return exactly target_recommendation_count recommendations when candidate_items holds "
+            "at least that many suitable products; return fewer only when it does not. "
             "Write all user-facing text in natural Korean."
         )
         return {
@@ -732,7 +749,9 @@ class LlmService:
             },
         }
 
-    def _candidate_items(self, ranked_items: list[dict]) -> list[dict[str, Any]]:
+    def _candidate_items(
+        self, ranked_items: list[dict], limit: int = MAX_LLM_CANDIDATES
+    ) -> list[dict[str, Any]]:
         # Limit prompt size while preserving the highest-ranked candidates.
         return [
             {
@@ -751,7 +770,7 @@ class LlmService:
                 "mood": item.get("mood"),
                 "sense_of_season": item.get("sense_of_season"),
             }
-            for item in ranked_items[:MAX_LLM_CANDIDATES]
+            for item in ranked_items[:limit]
             if item.get("image_url")
         ]
 
@@ -798,7 +817,12 @@ class LlmService:
     def _parse_json_object(self, content: str) -> dict[str, Any]:
         return parse_json_object(content)
 
-    def _normalize_llm_response(self, response: dict[str, Any], candidate_items: list[dict[str, Any]]) -> dict[str, Any]:
+    def _normalize_llm_response(
+        self,
+        response: dict[str, Any],
+        candidate_items: list[dict[str, Any]],
+        max_recommendations: int = MAX_RECOMMENDATIONS,
+    ) -> dict[str, Any]:
         candidates_by_id = {
             str(item["item_id"]): item for item in candidate_items if item.get("item_id") is not None
         }
@@ -832,7 +856,7 @@ class LlmService:
                     or "사용자 요청과 잘 맞는 추천 상품입니다.",
                 }
             )
-            if len(normalized_recommendations) >= MAX_RECOMMENDATIONS:
+            if len(normalized_recommendations) >= max_recommendations:
                 break
 
         if not normalized_recommendations:

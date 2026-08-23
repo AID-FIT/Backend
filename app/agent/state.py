@@ -23,6 +23,8 @@ class AgentState(TypedDict, total=False):
     lock_retrieval_target: bool
     # True면 후보를 카테고리별로 번갈아 배치한다(홈 타일용).
     diversify_by_category: bool
+    # 최종 추천 개수 상한. 비면 LlmService 기본값을 쓴다.
+    max_recommendations: int | None
     context: dict[str, Any]
 
     # 후속 질문을 이해하기 위한 직전 대화 내역(시간순)

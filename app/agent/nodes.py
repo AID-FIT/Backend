@@ -608,6 +608,7 @@ class AgentNodes:
                 use_closet_style=state.get("use_closet_style", True),
                 user_profile=state.get("user_profile", {}),
                 chat_history=state.get("chat_history", []),
+                max_recommendations=state.get("max_recommendations"),
             )
             state["final_response"] = AgentResponse.model_validate(response).model_dump()
             state["final_answer"] = state["final_response"]

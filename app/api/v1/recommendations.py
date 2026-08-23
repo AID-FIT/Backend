@@ -9,12 +9,16 @@ from app.db.session import get_db
 from app.schemas.recommendation import RecommendationCreateRequest, RecommendationResponse
 from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
+from app.services.target_category import infer_target_category
 from app.services.user_service import UserService
 
 router = APIRouter()
 
+# 홈 타일 목표 개수. 프론트가 2열 그리드라 짝수여야 마지막 줄이 비지 않는다.
+_HOME_TILE_COUNT = 8
+# 후보 풀은 목표 개수보다 넉넉해야 LLM이 고를 여지가 생긴다.
+_HOME_CANDIDATE_POOL = 30
 # 스타일 키워드가 하나도 없을 때 쓰는 기본 쿼리.
-_HOME_CANDIDATE_POOL = 20
 _HOME_FALLBACK_QUERY = "오늘 입기 좋은 데일리 코디를 추천해줘."
 
 _MAX_STYLE_KEYWORDS = 3
@@ -44,26 +48,21 @@ def _build_home_query(
     # 3) 옷장에서 주요 색상/무드/카테고리 추출
     colors: Counter[str] = Counter()
     moods: Counter[str] = Counter()
-    categories: Counter[str] = Counter()
     seasons: Counter[str] = Counter()
 
     for item in closet_items:
         color = str(item.get("color") or "").strip()
         mood = str(item.get("mood") or "").strip()
-        category = str(item.get("category") or "").strip()
         season = str(item.get("sense_of_season") or "").strip()
         if color:
             colors[color] += 1
         if mood:
             moods[mood] += 1
-        if category:
-            categories[category] += 1
         if season:
             seasons[season] += 1
 
     top_colors = [c for c, _ in colors.most_common(2)]
     top_moods = [m for m, _ in moods.most_common(2)]
-    top_categories = [c for c, _ in categories.most_common(3)]
     top_seasons = [s for s, _ in seasons.most_common(1)]
 
     if top_colors:
@@ -75,17 +74,23 @@ def _build_home_query(
     if top_seasons:
         parts.append("시즌: " + ", ".join(top_seasons))
 
+    taste = ". ".join(parts)
+    request = prompt.strip()
+
     # 4) 추천 지시 — "무신사"를 명시해 retrieval planner가 catalog 검색을 택하게 한다.
-    if parts:
-        query = ". ".join(parts) + ". 이 취향에 어울리는 무신사 상품으로 오늘의 코디를 추천해줘."
-    else:
-        query = _HOME_FALLBACK_QUERY
+    if not request:
+        return f"{taste}. 이 취향에 어울리는 무신사 상품으로 오늘의 코디를 추천해줘." if taste else _HOME_FALLBACK_QUERY
 
-    # 5) 추가 요구사항
-    if prompt:
-        query += f" 추가 요구사항: {prompt}"
-
-    return query
+    # 검색어는 사용자가 방금 입력한 가장 강한 신호다. 취향 문장 뒤에
+    # "추가 요구사항: 바지"로 덧붙이면 두 가지가 깨진다.
+    #   - infer_target_category가 "추천" 앞만 보므로 "바지"를 목표로 읽지 못한다.
+    #   - 긴 취향 문장에 묻혀 임베딩에서 비중을 잃는다.
+    # 그래서 문장 앞에 세우고, "추천"보다 앞에 오게 한다.
+    return (
+        f"{request}. {taste}. 이 조건에 맞는 무신사 상품을 추천해줘."
+        if taste
+        else f"{request}. 이 조건에 맞는 무신사 상품을 추천해줘."
+    )
 
 
 def normalize_user_profile(profile: object | None) -> dict | None:
@@ -173,8 +178,10 @@ async def get_home_recommendation(
         recommendation_target="musinsa",
         lock_retrieval_target=True,
         # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
-        # 된다. 타일이 같은 종류로만 차는 것을 막는다.
-        diversify_by_category=True,
+        # 된다. 타일이 같은 종류로만 차는 것을 막는다. 다만 "바지"처럼 종류를 찍어
+        # 검색했다면 섞는 쪽이 오히려 틀린 답이므로 그때는 끈다.
+        diversify_by_category=infer_target_category(query) is None,
+        max_recommendations=_HOME_TILE_COUNT,
     )
     return RecommendationResponse(**result)
 

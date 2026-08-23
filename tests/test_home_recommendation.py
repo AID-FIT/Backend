@@ -46,10 +46,30 @@ def test_home_query_falls_back_without_any_signal() -> None:
     assert infer_target_category(query) is None
 
 
-def test_home_query_appends_the_user_prompt() -> None:
+def test_home_query_leads_with_the_user_prompt() -> None:
+    # 취향 문장 뒤에 붙이면 긴 문맥에 묻히고, "추천" 뒤라 목표 카테고리로도 안 읽힌다.
     query = home_query(prompt="비 오는 날 입을 옷")
 
-    assert query.endswith("비 오는 날 입을 옷")
+    assert query.startswith("비 오는 날 입을 옷")
+    assert "스트릿" in query
+
+
+def test_search_term_becomes_the_target_category() -> None:
+    # "바지"를 검색했으면 바지가 나와야 한다. 취향 문장이 아무리 길어도 마찬가지다.
+    assert infer_target_category(home_query(prompt="바지")) == "바지"
+
+
+def test_search_works_without_any_taste_signal() -> None:
+    query = home_query(prompt="바지", closet_items=[], preferred_styles=[], age_range=None)
+
+    assert query.startswith("바지")
+    assert infer_target_category(query) == "바지"
+
+
+def test_style_keyword_search_keeps_no_target_category() -> None:
+    # 칩(캐주얼·여름·미니멀·데이트룩)은 종류가 아니라 무드다. 좁히면 안 된다.
+    for keyword in ("캐주얼", "여름", "미니멀", "데이트룩"):
+        assert infer_target_category(home_query(prompt=keyword)) is None
 
 
 def test_home_candidate_pool_is_wider_than_the_tile_count() -> None:
@@ -145,3 +165,37 @@ def test_chat_keeps_pure_score_order() -> None:
 
 def test_spreading_keeps_every_candidate() -> None:
     assert len(rank(SKEWED, diversify=True)) == len(SKEWED)
+
+
+def test_home_asks_for_more_tiles_than_the_chat_default() -> None:
+    # 홈은 타일을 채워야 하는 화면이라 채팅 기본값(5)보다 많이 요청한다.
+    from app.api.v1.recommendations import _HOME_TILE_COUNT
+    from app.services.llm_service import MAX_RECOMMENDATIONS
+
+    assert _HOME_TILE_COUNT > MAX_RECOMMENDATIONS
+
+
+def test_home_candidate_pool_leaves_room_to_choose() -> None:
+    # 후보가 목표 개수와 같으면 LLM이 고르는 게 아니라 그대로 옮겨 적게 된다.
+    from app.api.v1.recommendations import _HOME_CANDIDATE_POOL, _HOME_TILE_COUNT
+
+    assert _HOME_CANDIDATE_POOL >= _HOME_TILE_COUNT * 2
+
+
+def run_pipeline(**kwargs) -> dict:
+    from tests.test_agent_pipeline import build_pipeline
+
+    pipeline, _vlm, _rag, llm = build_pipeline()
+    asyncio.run(
+        pipeline.run(query="화이트 니트랑 어울리는 바지 추천해줘", user_id="user_001", **kwargs)
+    )
+    return llm.calls[-1]
+
+
+def test_requested_tile_count_reaches_the_llm() -> None:
+    # 홈 엔드포인트에서 개수를 넘겨도 노드가 흘려보내지 않으면 5개로 잘린다.
+    assert run_pipeline(max_recommendations=7)["max_recommendations"] == 7
+
+
+def test_chat_leaves_the_count_to_the_llm_default() -> None:
+    assert run_pipeline()["max_recommendations"] is None

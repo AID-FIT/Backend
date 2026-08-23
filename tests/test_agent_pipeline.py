@@ -129,6 +129,7 @@ class FakeLlmService:
         use_closet_style: bool = True,
         user_profile: dict | None = None,
         chat_history: list[dict] | None = None,
+        max_recommendations: int | None = None,
     ) -> dict:
         self.calls.append(
             {
@@ -140,6 +141,7 @@ class FakeLlmService:
                 "use_closet_style": use_closet_style,
                 "user_profile": user_profile or {},
                 "chat_history": chat_history or [],
+                "max_recommendations": max_recommendations,
             }
         )
         if self.response is not None:
