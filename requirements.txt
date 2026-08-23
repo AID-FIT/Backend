@@ -6,7 +6,6 @@ sqlalchemy[asyncio]==2.0.45
 asyncpg==0.31.0
 python-multipart==0.0.20
 python-jose[cryptography]==3.5.0
-passlib[bcrypt]==1.7.4
 alembic==1.17.2
 langgraph==1.0.5
 httpx==0.28.1
