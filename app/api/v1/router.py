@@ -4,6 +4,7 @@ from app.api.v1 import (
     auth,
     chats,
     closet,
+    cron,
     feedback,
     health,
     images,
@@ -22,3 +23,4 @@ api_router.include_router(recommendations.router, prefix="/recommendations", tag
 api_router.include_router(products.router, prefix="/products", tags=["products"])
 api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(chats.router, prefix="/chats", tags=["chats"])
+api_router.include_router(cron.router, prefix="/cron", tags=["cron"])

@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False
+    # 비어 있으면 Cron 엔드포인트를 열지 않는다.
+    cron_secret: str = ""
 
     @property
     def cors_origins(self) -> list[str]:
