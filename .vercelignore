@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 uploads/
+# 102MB ChromaDB. pgvector로 옮겨 배포 번들에 넣지 않는다.
+data/
 tests/
 k8s/
 docs/

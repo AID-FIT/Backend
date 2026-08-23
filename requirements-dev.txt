@@ -1,3 +1,9 @@
 -r requirements.txt
 pytest==9.1.1
 pytest-asyncio==1.4.0
+
+# 로컬 ChromaDB 작업과 pgvector 마이그레이션 원본 읽기에만 필요하다.
+# sentence-transformers는 PyTorch를 끌고 와 Vercel 함수 크기 한도(250MB)를
+# 넘기므로 배포용 requirements.txt에 두지 않는다.
+chromadb==1.5.9
+sentence-transformers==5.7.0

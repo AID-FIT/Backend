@@ -9,5 +9,3 @@ python-jose[cryptography]==3.5.0
 alembic==1.17.2
 langgraph==1.0.5
 httpx==0.28.1
-chromadb==1.5.9
-sentence-transformers==5.7.0

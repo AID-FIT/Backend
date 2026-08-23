@@ -1,4 +1,10 @@
-from rag_service_final import RAGRequest, search_musinsa
+import pytest
+
+# rag_service_final은 chromadb를 import한다. 배포 환경에는 설치하지 않으므로
+# (PyTorch까지 끌고 와 서버리스 함수 크기 한도를 넘긴다) 없을 때는 건너뛴다.
+pytest.importorskip("chromadb", reason="chromadb is not installed in this environment")
+
+from rag_service_final import RAGRequest, search_musinsa  # noqa: E402
 
 
 class FakeCollection:

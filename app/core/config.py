@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     rag_embedding_model: str = "jhgan/ko-sroberta-multitask"
     rag_embedding_cache_path: str = "data/huggingface"
     rag_embedding_local_files_only: bool = False
+    # pgvector 백엔드. Gemini 임베딩은 HTTP라 서버리스에서도 돌릴 수 있다.
+    # HNSW 인덱스는 2000차원까지만 지원해 1536을 쓴다.
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = 1536
+    rag_vector_backend: str = "static"
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False

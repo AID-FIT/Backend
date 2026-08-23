@@ -85,12 +85,38 @@ class RagService:
         }
 
     async def _search_vector_catalog(self, request: RAGRequest) -> list[dict]:
+        if settings.rag_vector_backend == "pgvector":
+            return await self._search_pgvector(request)
+
         # Import lazily so mock-only development does not require the vector stack.
         from rag_service_final import search as vector_search
 
         musinsa_request = request.model_copy(update={"retrieval_target": "musinsa"})
         response = await asyncio.to_thread(vector_search, musinsa_request.model_dump())
         return response.model_dump()["items"]
+
+    async def _search_pgvector(self, request: RAGRequest) -> list[dict]:
+        """Supabase pgvector에서 상품을 찾는다.
+
+        세션을 여기서 열고 닫는다. RAG는 요청 수명과 별개로 호출될 수 있어
+        호출부가 세션을 넘기지 않는다.
+        """
+        from app.db.session import AsyncSessionLocal
+        from app.services.pgvector_rag_service import PgVectorRagService
+
+        excluded = {
+            str(item_ref).strip()
+            for item_ref in request.filters.get("excluded_item_refs") or []
+            if str(item_ref).strip()
+        }
+        async with AsyncSessionLocal() as session:
+            return await PgVectorRagService().search(
+                session,
+                query=request.query,
+                limit=request.top_k,
+                filters=request.filters,
+                excluded_item_refs=excluded,
+            )
 
     async def search(
         self,
