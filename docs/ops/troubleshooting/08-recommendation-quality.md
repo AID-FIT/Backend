@@ -368,6 +368,185 @@ if (!nextQuery.trim()) {
 
 ---
 
+## 6. 필터가 있는 줄 알았지만 대부분 걸리지 않고 있었다
+
+### 증상
+
+"검색이 제대로 되는지 모르겠다." 에러는 없고 결과만 어딘가 어긋났다.
+
+### 원인 (1) — 만들어 놓고 쓰지 않는 필터가 더 많았다
+
+`_build_rag_filters`(nodes.py)가 모으는 키와 `_build_conditions`
+(pgvector_rag_service.py)가 실제로 조건으로 만드는 키를 나란히 놓으면 이렇다.
+
+| 키 | 모으는가 | 조건이 되는가 |
+| --- | :---: | :---: |
+| `category` | ✅ | ✅ |
+| `gender` | ✅ | ✅ |
+| `price_min` / `price_max` | ✅ | ✅ |
+| `color` | ✅ | **❌** |
+| `season` / `sense_of_season` | ✅ | **❌** |
+| `mood` | ❌ | **❌** |
+| `style` / `preferred_styles` | ✅ | ❌ (컬럼 없음) |
+
+`color`와 `season`은 **`product_vectors`에 컬럼이 있는데도** 조건이 되지 않았다.
+`SELECT`에는 들어 있어 응답에는 실려 나오니, 로그만 봐서는 필터가 도는 것처럼 보인다.
+
+> 필터가 "있다"는 말은 두 가지를 뜻할 수 있다. **값이 전달된다**와 **조건이 걸린다**는
+> 다르다. 둘 사이가 벌어져도 아무 에러가 나지 않는다.
+
+### 원인 (2) — 걸었어도 안 걸렸을 것이다
+
+카탈로그를 열어 보니 이 컬럼들은 **쉼표로 이어진 다중값**이었다.
+
+```
+mood     "casual, street" 2236 · "casual, minimal" 1578 · "casual, sporty" 904 …
+season   "all" 5230 · "spring, fall" 3205 · "summer" 1194 …
+color    "black" 3967 · "black, white" 254 · "black, gray" 142 …
+```
+
+`mood = 'street'`은 `"casual, street"`에 걸리지 않는다. `=`로 짰다면 **조건을 추가한
+뒤에도 결과가 0건**이었을 것이고, 원인을 찾기가 훨씬 어려웠을 것이다.
+
+### 해결 — 낱말 경계를 만들어 부분 일치시킨다
+
+`LIKE '%street%'`은 반대 방향으로 틀린다. `color=red`가 `"covered"`에 걸린다.
+양끝에 구분자를 붙여 경계를 만든다.
+
+```python
+def _multi_value_condition(self, column: str, key: str) -> str:
+    return f"', ' || lower({column}) || ',' LIKE '%, ' || :{key} || ',%'"
+```
+
+`season`에는 함정이 하나 더 있다. **`"all"`이 카탈로그의 41%**다. 그대로 좁히면
+"여름"을 고르는 순간 사계절 상품이 통째로 사라진다.
+
+```python
+conditions.append(
+    f"({self._multi_value_condition('season', 'season')}"
+    " OR lower(season) IN ('all', 'all-season'))"
+)
+```
+
+`style`·`preferred_styles`는 **대응 컬럼이 없다.** 조건으로 만들면 항상 0건이 되므로
+만들지 않고, 임베딩 질의 텍스트로만 쓴다. 그 사실을 주석과 테스트로 남겼다.
+
+### 테스트를 SQL로 실행한다
+
+조건 문자열을 파이썬으로 흉내 내 검사하면 **SQL이 틀려도 테스트가 통과한다.**
+sqlite는 `||`·`lower()`·`LIKE`를 같은 의미로 처리하므로, 만들어진 SQL을 실제로 실행한다.
+
+```python
+def test_word_fragments_do_not_match() -> None:
+    # LIKE '%cas%'로 짰다면 네 건 전부 걸렸을 것이다.
+    assert selected(mood="cas") == set()
+```
+
+---
+
+## 7. 새로고침이 매번 같은 결과를 줬다
+
+### 증상
+
+새로고침 버튼을 눌러도 타일이 그대로였다. 브라우저를 새로고침해도 같았다.
+
+### 원인
+
+`refresh_seed`는 홈 엔드포인트 → `context` → `filters`까지 잘 흘러갔다. 그런데
+**`PgVectorRagService.search`가 그 값을 읽지 않았다.**
+
+seed 오프셋 구현은 **정적 카탈로그 경로에만** 있었다(`rag_service.py`의
+`start = (seed * limit) % len(catalog)`). pgvector로 옮기며 그 구현이 따라오지 않았다.
+벡터 쿼리는 `ORDER BY embedding <=> vector LIMIT n`으로 완전히 결정적이라,
+같은 질의·같은 필터면 **매번 같은 상위 N건**이 나온다.
+
+> §1과 같은 실패의 반복이다. **저장소를 갈아끼울 때 사라지는 것은 저장소 코드가 아니라
+> 그 위에 얹혀 있던 보정 로직이다.** 이번에는 목록을 만들어 두지 않아 또 놓쳤다.
+
+### 해결 — 후보 풀 안에서 회전한다
+
+`OFFSET`은 쓰지 않는다. 누를수록 유사도가 낮은 상품만 남는다. 이미
+`limit * CANDIDATE_MULTIPLIER`만큼 후보를 뽑고 있으므로, 그 안에서 시작점만 옮긴다.
+
+```python
+start = (refresh_seed * max(limit, 1)) % len(candidates)
+return candidates[start:] + candidates[:start]
+```
+
+---
+
+## 8. 13초 동안 화면이 아무것도 알려주지 않았다
+
+### 증상
+
+추천 한 건에 13초가 걸리는데 그동안 스켈레톤만 떴다. 동작 중인지 멈춘 건지 알 수 없었다.
+
+### 먼저 확인한 것 — 플랫폼이 스트리밍을 지원하는가
+
+Vercel 문서는 *Streaming Python functions*에서 지원한다고 말한다. 하지만 이 앱은
+`rewrites`로 모든 경로를 `api/index.py`로 보내는 구조라 **실제로 확인해야 했다.**
+
+인증이 필요한 추천 엔드포인트로는 확인이 번거로워, 진단용 엔드포인트를 뒀다.
+본문에 사용자 데이터가 없어 인증을 걸지 않았다.
+
+```bash
+curl -N https://<host>/api/v1/health/stream
+```
+
+```
+data: {"tick": 1, "elapsed_ms": 0}      <- 수신 …768.081
+data: {"tick": 2, "elapsed_ms": 1000}   <- 수신 …769.108
+data: {"tick": 3, "elapsed_ms": 2001}   <- 수신 …770.135
+```
+
+**1.027초 간격으로 도착했다.** 버퍼링됐다면 3초 뒤 한꺼번에 왔을 것이다.
+
+> "지원한다"는 문서와 "이 배포 구성에서 동작한다"는 서로 다른 주장이다.
+> 값이 큰 기능일수록 **가장 싼 실험으로 먼저 확인**한다.
+
+### 해결 — LangGraph의 노드 단위 스트림을 그대로 흘린다
+
+```python
+async for update in self.graph.astream(state, stream_mode="updates"):
+    for node_name, delta in update.items():
+        merged.update(delta)
+        step = describe_step(node_name, merged)
+        if step is not None:
+            yield {"type": "step", **step}
+```
+
+문구에 **실제 상태에서 읽은 수치**를 싣는다. "찾는 중"만 반복하면 추정 타이머와
+다를 게 없다.
+
+| 노드 | 문구 | 함께 싣는 값 |
+| --- | --- | --- |
+| `vlm` | 사진 속 옷을 살펴봤어요 | `2벌 인식` |
+| `musinsa_rag` | 상품 12,794건에서 골랐어요 | `후보 30건` |
+| `style_ranker` | 취향에 맞게 순서를 매겼어요 | `4가지 종류` |
+
+`input_validation`·`context_check`처럼 밀리초 만에 끝나는 노드는 **노출하지 않는다.**
+깜빡이기만 하고 아무것도 알려주지 않는다.
+
+### 두 가지 함정
+
+**(1) `EventSource`는 커스텀 헤더를 못 보낸다.** 토큰을 쿼리스트링에 실으면 서버 로그와
+브라우저 기록에 남는다. `fetch` + `ReadableStream`으로 읽어 헤더에 담는다.
+
+**(2) 헤더가 나간 뒤의 실패는 HTTP 상태로 알릴 수 없다.** 예외를 그대로 두면 연결만
+끊겨 화면이 영원히 로딩에 머문다. 스트림 안에서 `{"type": "error"}`로 흘린다.
+
+**(3) 네트워크는 이벤트 경계를 지켜 주지 않는다.** `data: {…}\n\n` 하나가 두 청크로
+쪼개져 오거나 여러 이벤트가 한 청크에 붙어 온다. 청크를 그대로 `JSON.parse` 하면 깨진다.
+남은 조각을 들고 있다가 완성된 것만 내보내는 파서를 따로 뒀다.
+
+### 폴백을 숨기지 않는다
+
+스트리밍을 못 쓰는 환경(네이티브 RN에는 fetch 스트림이 없다)에서는 시간 기반 예상
+단계로 넘어간다. 다만 화면에 **`예상` 배지**를 단다. 추정을 실제 진행인 척 보여주면
+사용자를 속이는 것이 된다.
+
+---
+
 ## 체크리스트
 
 추천 결과가 이상할 때 **이 순서로** 확인한다. 뒤에서 앞으로 가면 시간을 버린다.
@@ -381,6 +560,10 @@ if (!nextQuery.trim()) {
 - [ ] 이 보정이 **모든 화면에서** 옳은가, 아니면 특정 화면에서만 옳은가
 - [ ] 사용자가 입력한 검색어가 다른 값에 덮이거나 문장 끝에 묻히지 않는가
 - [ ] 캐시 키 하나에 성격이 다른 결과를 함께 쓰고 있지 않은가
+- [ ] 전달되는 필터 키와 **실제로 조건이 되는** 키가 같은가
+- [ ] 컬럼이 쉼표 다중값인가 — `=` 비교는 하나도 걸리지 않는다
+- [ ] 저장소를 바꿀 때 그 위에 얹혀 있던 보정 로직을 함께 옮겼는가
+- [ ] 추정으로 보여주는 것을 실제인 척 표시하고 있지 않은가
 - [ ] 테스트 단언문이 "원한 것"이 아니라 "코드가 하는 것"을 적고 있지 않은가
 
 ---
