@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -153,6 +163,40 @@ class RecommendationItem(Base, TimestampMixin):
     category: Mapped[str] = mapped_column(String(80))
     reason: Mapped[str] = mapped_column(Text)
     rank: Mapped[int] = mapped_column(Integer)
+
+
+class ChatConversation(Base, TimestampMixin):
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+
+
+class ChatMessage(Base, TimestampMixin):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_chat_messages_role"),
+        # 대화 내역은 항상 (conversation_id, created_at) 순으로 읽는다.
+        Index("ix_chat_messages_conversation_created_at", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(20))
+    # content는 채팅 UI 표시와 모델 대화 내역 구성용,
+    # payload는 AgentResponse 전체나 이미지 URL을 손실 없이 보관한다.
+    content: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    conversation: Mapped[ChatConversation] = relationship(back_populates="messages")
 
 
 class FeedbackEvent(Base, TimestampMixin):

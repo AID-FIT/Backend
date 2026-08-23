@@ -26,6 +26,7 @@ class RecommendationService:
         recommendation_target: str = "musinsa",
         image_url: str | None = None,
         closet_item_id: str | None = None,
+        chat_history: list[dict] | None = None,
     ) -> dict:
         """비영속 추천 생성. 홈 피드처럼 결과를 저장하지 않는 경로에서 사용한다."""
         # Centralize image normalization before entering the LangGraph pipeline.
@@ -41,6 +42,7 @@ class RecommendationService:
             recommendation_target=recommendation_target,
             image_url=image_url or (normalized_image_urls[0] if normalized_image_urls else None),
             closet_item_id=closet_item_id,
+            chat_history=chat_history or [],
         )
 
     async def create_and_persist(

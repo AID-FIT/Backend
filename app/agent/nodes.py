@@ -361,6 +361,7 @@ class AgentNodes:
                 closet_items=state.get("closet_items", []),
                 use_closet_style=state.get("use_closet_style", True),
                 user_profile=state.get("user_profile", {}),
+                chat_history=state.get("chat_history", []),
             )
             state["final_response"] = AgentResponse.model_validate(response).model_dump()
         except ValidationError:

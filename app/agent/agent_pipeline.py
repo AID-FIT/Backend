@@ -119,6 +119,7 @@ class AidFitAgentPipeline:
         recommendation_target: str = "musinsa",
         image_url: str | None = None,
         closet_item_id: str | None = None,
+        chat_history: list[dict] | None = None,
         return_trace: bool = False,
     ) -> dict:
         # Keep old single-image callers compatible with the new multi-image path.
@@ -134,6 +135,7 @@ class AidFitAgentPipeline:
             "closet_item_id": closet_item_id,
             "recommendation_target": recommendation_target,
             "context": context or {},
+            "chat_history": chat_history or [],
             "vlm_items": [],
             "rag_results": [],
             "ranked_items": [],
