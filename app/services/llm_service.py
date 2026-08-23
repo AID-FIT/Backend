@@ -25,6 +25,7 @@ class LlmService:
         closet_items: list[dict] | None = None,
         use_closet_style: bool = True,
         user_profile: dict | None = None,
+        chat_history: list[dict] | None = None,
     ) -> dict:
         # Always return the same public contract regardless of mock or real LLM.
         if self.use_mock_ai:
@@ -38,6 +39,7 @@ class LlmService:
                 closet_items=closet_items or [],
                 use_closet_style=use_closet_style,
                 user_profile=user_profile or {},
+                chat_history=chat_history or [],
             )
         return AgentResponse.model_validate(response).model_dump()
 
@@ -94,6 +96,7 @@ class LlmService:
         closet_items: list[dict] | None = None,
         use_closet_style: bool = True,
         user_profile: dict | None = None,
+        chat_history: list[dict] | None = None,
     ) -> dict:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -111,6 +114,7 @@ class LlmService:
             closet_items=closet_items or [],
             use_closet_style=use_closet_style,
             user_profile=user_profile or {},
+            chat_history=chat_history or [],
         )
         url = f"{settings.gemini_base_url.rstrip('/')}/models/{settings.gemini_model}:generateContent"
         headers = {
@@ -144,10 +148,13 @@ class LlmService:
         closet_items: list[dict] | None = None,
         use_closet_style: bool = True,
         user_profile: dict | None = None,
+        chat_history: list[dict] | None = None,
     ) -> dict[str, Any]:
         candidate_items = self._candidate_items(ranked_items)
         prompt = {
             "user_query": query,
+            # 시간순 이전 대화. "더 저렴한 걸로" 같은 후속 질문을 이해하는 데 쓴다.
+            "chat_history": chat_history or [],
             "retrieval_target": retrieval_target,
             "vlm_items": vlm_items,
             "closet_items": closet_items or [],

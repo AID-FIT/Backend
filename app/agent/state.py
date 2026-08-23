@@ -16,6 +16,9 @@ class AgentState(TypedDict, total=False):
     recommendation_target: str
     context: dict[str, Any]
 
+    # 후속 질문을 이해하기 위한 직전 대화 내역([{role, content}, ...], 시간순)
+    chat_history: list[dict[str, Any]]
+
     # Input / image / closet state
     has_image: bool
     has_closet_items: bool

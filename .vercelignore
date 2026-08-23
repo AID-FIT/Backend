@@ -1,0 +1,16 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+uploads/
+tests/
+k8s/
+docs/
+scripts/k3s/
+.github/
+Dockerfile
+docker-compose.yml
+.DS_Store
