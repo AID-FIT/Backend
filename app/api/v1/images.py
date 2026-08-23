@@ -34,6 +34,7 @@ async def upload_image(
             id=duplicate.id,
             image_url=duplicate.storage_url,
             content_type=duplicate.content_type,
+            analyzed=await ClosetService().has_analysis(db, duplicate),
         )
 
     image = ImageAsset(
@@ -45,12 +46,49 @@ async def upload_image(
     )
     db.add(image)
     await db.flush()
-    await ClosetService().analyze_and_store(db, current_user, image)
+
+    # VLM 호출은 여기서 하지 않는다. Gemini Vision이 몇 초를 잡아먹는 동안
+    # 사용자가 업로드 완료를 기다리게 된다. 같은 사진이 이미 분석돼 있으면
+    # 그 결과만 복사하고(호출 없음), 아니면 클라이언트가 /analyze로 이어서 요청한다.
+    reused = await ClosetService().reuse_analysis(db, current_user, image)
     await db.commit()
+
     return ImageUploadResponse(
         id=stored["id"],
         image_url=stored["image_url"],
         content_type=stored["content_type"],
+        analyzed=reused is not None,
+    )
+
+
+@router.post("/{image_id}/analyze", response_model=ImageUploadResponse)
+async def analyze_image(
+    image_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ImageUploadResponse:
+    """업로드와 분리된 VLM 분석. 이미 분석된 사진이면 다시 호출하지 않는다."""
+    owned = await db.execute(
+        select(ImageAsset).where(
+            ImageAsset.id == image_id,
+            ImageAsset.user_id == current_user.id,
+        )
+    )
+    image = owned.scalar_one_or_none()
+    if image is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    closet_service = ClosetService()
+    if not await closet_service.has_analysis(db, image):
+        if await closet_service.reuse_analysis(db, current_user, image) is None:
+            await closet_service.analyze_and_store(db, current_user, image)
+        await db.commit()
+
+    return ImageUploadResponse(
+        id=image.id,
+        image_url=image.storage_url,
+        content_type=image.content_type,
+        analyzed=True,
     )
 
 
@@ -60,13 +98,19 @@ async def list_images(
     db: AsyncSession = Depends(get_db),
 ) -> list[ImageUploadResponse]:
     result = await db.execute(
-        select(ImageAsset)
+        select(ImageAsset, ClosetItem.id)
+        .outerjoin(ClosetItem, ClosetItem.image_id == ImageAsset.id)
         .where(ImageAsset.user_id == current_user.id)
         .order_by(ImageAsset.created_at.desc())
     )
     return [
-        ImageUploadResponse(id=image.id, image_url=image.storage_url, content_type=image.content_type)
-        for image in result.scalars().all()
+        ImageUploadResponse(
+            id=image.id,
+            image_url=image.storage_url,
+            content_type=image.content_type,
+            analyzed=closet_item_id is not None,
+        )
+        for image, closet_item_id in result.all()
     ]
 
 

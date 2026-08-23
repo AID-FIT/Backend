@@ -7,6 +7,8 @@ class ImageUploadResponse(BaseModel):
     id: str
     image_url: str
     content_type: str
+    # 옷 메타데이터 분석이 끝났는지. false면 클라이언트가 /analyze를 이어서 부른다.
+    analyzed: bool = False
 
 
 class UserProfile(BaseModel):
