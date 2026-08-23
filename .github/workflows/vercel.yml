@@ -1,0 +1,40 @@
+name: Deploy to Vercel
+
+# Vercel Git 연동은 Hobby 플랜에서 비공개 조직 저장소를 지원하지 않아
+# 대신 Actions에서 CLI로 배포한다. VERCEL_TOKEN 시크릿이 필요하다.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: vercel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aidfit-backend.vercel.app
+
+    env:
+      VERCEL_ORG_ID: team_WeztGPOUQ7UpZsy10WZwQ6iL
+      VERCEL_PROJECT_ID: prj_RXd1IXEGdt9qB1YjLfDUYpvNLupQ
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy
+        run: vercel deploy --prod --yes --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

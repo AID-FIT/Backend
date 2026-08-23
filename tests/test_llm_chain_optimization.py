@@ -3,8 +3,10 @@ import json
 
 import pytest
 
+from app.agent.nodes import AgentNodes
 from app.core import config as config_module
 from app.services.llm_service import LlmService
+from tests.test_agent_pipeline import FakeLlmService
 
 
 class CapturingClient:
@@ -178,3 +180,59 @@ def test_final_composition_keeps_the_default_model(monkeypatch) -> None:
     request = last_request()
     assert "/models/heavy-model:" in request["url"]
     assert "thinkingConfig" not in request["payload"]["generationConfig"]
+
+
+def test_query_refiner_skips_llm_without_history_or_vlm() -> None:
+    llm = FakeLlmService()
+    nodes = AgentNodes(llm_service=llm)
+    query = "와이드 슬랙스 바지 추천해줘"
+
+    result = asyncio.run(
+        nodes.query_refiner_node(
+            {"query": query, "chat_history": [], "vlm_items": []}
+        )
+    )
+
+    assert llm.refine_calls == []
+    assert result["resolved_query"] == query
+
+
+def test_query_refiner_calls_llm_when_history_exists() -> None:
+    refined = "검은색 재킷에 어울리는 더 저렴한 회색 와이드 슬랙스"
+    llm = FakeLlmService(refined_query=refined)
+    nodes = AgentNodes(llm_service=llm)
+
+    result = asyncio.run(
+        nodes.query_refiner_node(
+            {
+                "query": "더 저렴한 걸로 다시 골라줘",
+                "chat_history": [
+                    {"role": "user", "content": "와이드 슬랙스 바지 추천해줘"},
+                    {"role": "assistant", "content": "회색 와이드 슬랙스를 추천합니다."},
+                ],
+                "vlm_items": [],
+            }
+        )
+    )
+
+    assert len(llm.refine_calls) == 1
+    assert result["resolved_query"] == refined
+
+
+def test_query_refiner_calls_llm_when_vlm_items_exist() -> None:
+    llm = FakeLlmService(refined_query="화이트 니트에 어울리는 블랙 와이드 팬츠")
+    nodes = AgentNodes(llm_service=llm)
+
+    result = asyncio.run(
+        nodes.query_refiner_node(
+            {
+                "query": "이거랑 어울리는 바지",
+                "chat_history": [],
+                "vlm_items": [{"category": "상의", "color": "white", "material": "knit"}],
+            }
+        )
+    )
+
+    assert len(llm.refine_calls) == 1
+    assert llm.refine_calls[0]["vlm_items"][0]["material"] == "knit"
+    assert result["resolved_query"] == "화이트 니트에 어울리는 블랙 와이드 팬츠"

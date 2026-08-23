@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.embedding_service import EmbeddingService
+from app.services.target_category import infer_target_category
 
 TABLE = "product_vectors"
 FALLBACK_IMAGE_URL = "https://image.msscdn.net/images/no_image_500.png"
@@ -37,7 +38,7 @@ class PgVectorRagService:
             return []
 
         vector = await self.embedding_service.embed_query(query)
-        conditions, params = self._build_conditions(filters or {})
+        conditions, params = self._build_conditions(self._effective_filters(query, filters or {}))
         candidate_limit = min(max(limit * CANDIDATE_MULTIPLIER, limit), MAX_CANDIDATES)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -66,6 +67,21 @@ class PgVectorRagService:
             if len(items) >= limit:
                 break
         return items
+
+    def _effective_filters(self, query: str, filters: dict[str, Any]) -> dict[str, Any]:
+        """카테고리가 정해지지 않았으면 질의에서 뽑는다.
+
+        벡터 검색만으로는 "바지에 어울리는 상의"에서 상의를 찾지 못한다.
+        질의 텍스트가 바지 설명으로 가득해 비슷한 바지가 먼저 걸린다.
+        찾는 옷의 카테고리를 필터로 못박아야 한다.
+        """
+        if filters.get("category"):
+            return filters
+
+        target = infer_target_category(query)
+        if not target:
+            return filters
+        return {**filters, "category": target}
 
     def _build_conditions(self, filters: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
         """메타데이터 선필터. 벡터 검색 전에 후보를 좁힌다."""

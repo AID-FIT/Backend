@@ -17,6 +17,7 @@ from app.schemas.ai import (
 from app.schemas.recommendation import AgentResponse
 from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
+from app.services.target_category import query_names_a_category
 from app.services.vlm_service import VlmService
 
 
@@ -226,6 +227,11 @@ class AgentNodes:
     async def query_refiner_node(self, state: AgentState) -> AgentState:
         if state.get("error"):
             return state
+        # refine_query exists to fold prior turns and VLM context into a
+        # standalone search string. With neither, the original query already is.
+        if not state.get("chat_history") and not state.get("vlm_items"):
+            state["resolved_query"] = str(state["query"]).strip()
+            return state
         try:
             refined_query = await self.llm_service.refine_query(
                 query=state["query"],
@@ -337,7 +343,11 @@ class AgentNodes:
         vlm_items = state.get("vlm_items") or []
         user_profile = state.get("user_profile") or {}
         query = state.get("resolved_query") or state["query"]
-        filters = self._build_rag_filters(context, user_profile, vlm_items)
+        # 정제된 질의와 원본 둘 다 본다. 정제 과정에서 "상의" 같은 단어가
+        # 사라졌더라도 사용자가 처음 요구한 카테고리는 존중해야 한다.
+        filters = self._build_rag_filters(
+            context, user_profile, vlm_items, query=f"{state['query']} {query}"
+        )
         if state.get("candidate_scope") == "unseen":
             excluded_refs = state.get("previous_shown_item_refs", [])
             if excluded_refs:
@@ -358,7 +368,13 @@ class AgentNodes:
         state["rag_request"] = request.model_dump()
         return state
 
-    def _build_rag_filters(self, context: dict[str, Any], user_profile: dict[str, Any], vlm_items: list[dict]) -> dict:
+    def _build_rag_filters(
+        self,
+        context: dict[str, Any],
+        user_profile: dict[str, Any],
+        vlm_items: list[dict],
+        query: str = "",
+    ) -> dict:
         # Explicit context filters win over profile or image-inferred defaults.
         filters = {
             "refresh_seed": context.get("refresh_seed", 0),
@@ -381,10 +397,19 @@ class AgentNodes:
         if preferred_styles and "preferred_styles" not in filters:
             filters["preferred_styles"] = preferred_styles
 
-        for key, value in self._inferred_vlm_filters(vlm_items).items():
+        inferred = self._inferred_vlm_filters(vlm_items)
+        # 질의가 찾는 옷을 말했다면 사진에서 읽은 카테고리는 쓰지 않는다.
+        # "이 바지에 어울리는 상의"에서 VLM의 category는 바지고, 그대로 넣으면
+        # 후보가 바지로 고정돼 상의를 영영 찾지 못한다.
+        # 호출부가 명시한 context의 category는 그대로 존중한다.
+        if query_names_a_category(query):
+            inferred.pop("category", None)
+
+        for key, value in inferred.items():
             if value and key not in filters:
                 filters[key] = value
         return filters
+
 
     def _inferred_vlm_filters(self, vlm_items: list[dict]) -> dict[str, Any]:
         # An outfit photo carries several garments, so no single one may narrow the search.

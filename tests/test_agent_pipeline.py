@@ -218,6 +218,8 @@ def test_text_only_skips_vlm_and_routes_to_musinsa() -> None:
 
     assert result["status"] == "success"
     assert vlm.calls == []
+    assert llm.refine_calls == []
+    assert rag.calls[0]["query"] == "화이트 니트랑 어울리는 바지 추천해줘"
     assert rag.calls[0]["retrieval_target"] == "musinsa"
     assert "vlm_items" in rag.calls[0]
     assert "items" not in rag.calls[0]
@@ -386,8 +388,10 @@ def test_rag_request_adds_profile_and_vlm_filter_candidates() -> None:
     filters = rag.calls[0]["filters"]
     assert filters["preferred_styles"] == ["minimal", "casual"]
     assert filters["sense_of_season"] == "spring"
-    assert filters["category"] == "top"
     assert filters["color"] == "white"
+    # 사진 속 옷(상의)의 카테고리는 필터로 쓰지 않는다. 사용자가 찾는 건 바지다.
+    # 그대로 넣으면 후보가 상의로 고정돼 바지를 영영 찾지 못한다.
+    assert "category" not in filters
 
 
 def test_rag_request_fetches_thirty_candidates_by_default() -> None:
@@ -791,6 +795,10 @@ def test_new_follow_up_question_runs_fresh_rag() -> None:
         pipeline.run(
             query="이번에는 신발을 추천해줘",
             user_id="user_001",
+            chat_history=[
+                {"role": "user", "content": "팬츠 추천해줘"},
+                {"role": "assistant", "content": "와이드 팬츠를 추천합니다."},
+            ],
             previous_rag_results=[fake_item("pants")],
             previous_rag_query="팬츠 추천",
             previous_retrieval_target="musinsa",

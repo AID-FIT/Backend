@@ -1,3 +1,5 @@
+from collections import Counter
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +13,78 @@ from app.services.user_service import UserService
 
 router = APIRouter()
 
-HOME_RECOMMENDATION_QUERY = (
-    "사용자의 옷장과 취향을 기반으로 하고, 이미지가 존재한다면, 이미지와 매칭이 되는 오늘 입기 좋은 "
-    "코디를 추천해주고, 이미지가 존재하지 않다면 사용자의 옷장과 취향을 기반으로만 추천해줘. "
-    "단, 사용자의 추가 요구사항이 있다면, 추가 요구사항은 최우선적으로 적용해 줘. 추가 요구사항 : {prompt}"
-)
+# 스타일 키워드가 하나도 없을 때 쓰는 기본 쿼리.
+_HOME_FALLBACK_QUERY = "오늘 입기 좋은 데일리 코디를 추천해줘."
+
+_MAX_STYLE_KEYWORDS = 3
+
+
+def _build_home_query(
+    closet_items: list[dict],
+    preferred_styles: list[str],
+    age_range: str | None = None,
+    prompt: str = "",
+) -> str:
+    """옷장 메타데이터와 사용자 선호를 조합해 벡터 검색에 유효한 쿼리를 만든다.
+
+    지시문이 아닌 스타일 키워드 중심으로 작성하여 pgvector 임베딩이
+    실제 의류 스타일과 유사도를 잡을 수 있게 한다.
+    """
+    parts: list[str] = []
+
+    # 1) 연령대
+    if age_range:
+        parts.append(f"{age_range}")
+
+    # 2) 선호 스타일
+    if preferred_styles:
+        parts.append(" ".join(preferred_styles[:_MAX_STYLE_KEYWORDS]) + " 스타일")
+
+    # 3) 옷장에서 주요 색상/무드/카테고리 추출
+    colors: Counter[str] = Counter()
+    moods: Counter[str] = Counter()
+    categories: Counter[str] = Counter()
+    seasons: Counter[str] = Counter()
+
+    for item in closet_items:
+        color = str(item.get("color") or "").strip()
+        mood = str(item.get("mood") or "").strip()
+        category = str(item.get("category") or "").strip()
+        season = str(item.get("sense_of_season") or "").strip()
+        if color:
+            colors[color] += 1
+        if mood:
+            moods[mood] += 1
+        if category:
+            categories[category] += 1
+        if season:
+            seasons[season] += 1
+
+    top_colors = [c for c, _ in colors.most_common(2)]
+    top_moods = [m for m, _ in moods.most_common(2)]
+    top_categories = [c for c, _ in categories.most_common(3)]
+    top_seasons = [s for s, _ in seasons.most_common(1)]
+
+    if top_colors:
+        parts.append("주요 색상: " + ", ".join(top_colors))
+    if top_moods:
+        parts.append("무드: " + ", ".join(top_moods))
+    if top_categories:
+        parts.append("보유 아이템: " + ", ".join(top_categories))
+    if top_seasons:
+        parts.append("시즌: " + ", ".join(top_seasons))
+
+    # 4) 추천 지시
+    if parts:
+        query = ". ".join(parts) + ". 이 취향에 어울리는 오늘의 코디를 추천해줘."
+    else:
+        query = _HOME_FALLBACK_QUERY
+
+    # 5) 추가 요구사항
+    if prompt:
+        query += f" 추가 요구사항: {prompt}"
+
+    return query
 
 
 def normalize_user_profile(profile: object | None) -> dict | None:
@@ -73,8 +142,15 @@ async def get_home_recommendation(
         "preferred_styles": preference.styles if preference else [],
     }
 
+    query = _build_home_query(
+        closet_items=closet_payload,
+        preferred_styles=preference.styles if preference else [],
+        age_range=age_range,
+        prompt=prompt,
+    )
+
     result = await RecommendationService().create(
-        query=HOME_RECOMMENDATION_QUERY.format(prompt=prompt or "없음"),
+        query=query,
         user_id=current_user.id,
         context={
             "refresh_seed": max(refresh_seed, 0),

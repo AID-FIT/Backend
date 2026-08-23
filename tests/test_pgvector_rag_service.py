@@ -145,3 +145,29 @@ def test_candidate_pool_is_wider_than_the_requested_limit() -> None:
     search(session, query="바지", limit=5)
 
     assert session.params[0]["candidate_limit"] > 5
+
+
+def test_target_category_is_inferred_from_the_query() -> None:
+    # 벡터 검색만으로는 "바지에 어울리는 상의"에서 상의를 찾지 못한다.
+    # 질의 텍스트가 바지 설명으로 가득해 비슷한 바지가 먼저 걸린다.
+    session = RecordingSession([row("musinsa_1")])
+
+    search(session, query="이 바지에 어울리는 상의 추천해줘")
+
+    assert session.params[0]["category"] == "상의"
+
+
+def test_explicit_category_filter_wins_over_inference() -> None:
+    session = RecordingSession([row("musinsa_1")])
+
+    search(session, query="이 바지에 어울리는 상의 추천해줘", filters={"category": "가방"})
+
+    assert session.params[0]["category"] == "가방"
+
+
+def test_no_category_condition_when_the_query_names_none() -> None:
+    session = RecordingSession([row("musinsa_1")])
+
+    search(session, query="데일리로 입기 좋은 거 추천해줘")
+
+    assert "category" not in session.params[0]
