@@ -67,7 +67,62 @@ app/
     agent_pipeline.py      # LangGraph 컴파일 및 실행
 ```
 
+## LLM-based LangGraph Flow
+
+추천 Agent의 분기 결정은 운영 모드(`USE_MOCK_AI=false`)에서 Gemini 구조화 출력으로 수행합니다. LangGraph 노드는 키워드 규칙으로 의도를 결정하지 않고, 각 LLM 결과를 Pydantic 계약으로 검증한 뒤 다음 노드로 라우팅합니다.
+
+```text
+입력 검증
+  -> LLM 의도 분류
+     -> general_chat: 일반 답변 LLM -> 종료
+     -> fashion_service
+        -> 이미지가 있으면 VLM
+        -> LLM 질의 정제(query + 대화 내역 + VLM 결과)
+        -> LLM 검색 계획(retrieval target + reuse/retrieve + shown/unseen scope)
+           -> reuse: 비교·설명은 노출 후보, "하나 더"는 미노출 후보 재사용
+           -> retrieve: 후보 소진·TTL 만료·조건 변경 시 closet / musinsa / hybrid RAG 실행
+        -> 후보 랭킹
+        -> RAG 후보만 사용하는 최종 답변 LLM
+```
+
+채팅 경로는 RAG 후보 풀, 누적 노출 `item_ref`, 원 검색 질의·대상·조회 시각을 assistant 메시지의 비공개 `_agent_context`에 저장합니다. "하나 더", "다른 상품"처럼 같은 의도의 추가 추천은 아직 노출되지 않은 후보만 재랭킹해 RAG 호출을 생략합니다. 비교·설명 요청은 이미 노출된 후보를 사용할 수 있고, 미노출 후보 소진·TTL 만료·주제/카테고리/소스/필수 조건 변경 시에만 새 RAG를 수행합니다. 미노출 후보가 소진된 재검색에는 누적 노출 ID가 제외 필터로 전달됩니다. 이 비공개 컨텍스트는 채팅 조회 API 응답에서 제거됩니다.
+
+`USE_MOCK_AI=true`에서는 외부 API 없이 프론트엔드와 테스트를 실행할 수 있도록 결정론적 mock 판단을 사용합니다. 실제 LLM 라우팅을 사용하려면 `USE_MOCK_AI=false`와 `GEMINI_API_KEY`를 설정합니다.
+
 ## Local Setup
+
+### Windows PowerShell에서 Agent만 채팅 테스트
+
+프론트엔드, FastAPI 서버, PostgreSQL, Docker를 실행하지 않고 현재 LangGraph Agent를
+PowerShell에서 바로 대화형으로 확인할 수 있습니다.
+
+화면형 상세 설명은 [로컬 Agent 채팅 HTML 가이드](docs/local_agent_chat_guide.html)를 확인하세요.
+
+```powershell
+# .env의 USE_MOCK_AI 설정을 따름 (기본값)
+.\scripts\run_agent_chat.ps1
+
+# 외부 API를 전혀 호출하지 않는 완전 로컬 mock 테스트
+.\scripts\run_agent_chat.ps1 -Mode Mock
+
+# .env의 GEMINI_API_KEY를 사용하는 실제 LLM 테스트
+.\scripts\run_agent_chat.ps1 -Mode Gemini
+```
+
+첫 실행 시 저장소의 `.venv`를 만들고 `requirements.txt`를 자동 설치합니다. 대화 중에는
+`/reset`으로 대화 문맥을 지우고, `/trace`로 intent·검색 분기·RAG 재사용 여부를 확인할 수
+있습니다. `/image <URL>`을 입력하면 다음 질문에 이미지 URL을 첨부합니다.
+
+한 번만 실행하고 종료하는 smoke test도 지원합니다.
+
+```powershell
+.\scripts\run_agent_chat.ps1 -Mode Mock -Query "화이트 니트에 어울리는 바지 추천해줘" -Trace
+```
+
+이 실행기는 메모리 안에서만 대화 내역과 직전 RAG 후보를 유지하므로 DB에는 아무것도
+저장하지 않습니다.
+
+### 전체 백엔드 로컬 실행
 
 ```bash
 cd /Users/mac/Desktop/Coding/_AIDFIT_backend
@@ -110,6 +165,7 @@ scripts/k3s/deploy.sh
 | `VLM_MAX_CONCURRENCY` | 이미지 동시 분석 개수 | `4` |
 | `VLM_MAX_IMAGE_BYTES` | 분석 허용 이미지 최대 크기 | `8388608` |
 | `VLM_MAX_ITEMS_PER_IMAGE` | 코디 사진 1장에서 추출할 아이템 최대 개수 | `8` |
+| `RAG_CANDIDATE_CACHE_TTL_SECONDS` | 채팅 후보 풀 재사용 TTL. `0` 이하면 만료하지 않음 | `900` |
 | `GOOGLE_CLIENT_IDS` | 허용할 Google OAuth client ID 목록 | `ios-client-id,web-client-id` |
 | `APPLE_CLIENT_IDS` | 허용할 Apple Bundle ID 또는 Services ID 목록 | `com.aidfit.app` |
 | `AUTH_ALLOW_UNVERIFIED_TOKENS` | 로컬 테스트용 서명 검증 우회. 운영 금지 | `false` |

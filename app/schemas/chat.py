@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.schemas.recommendation import AgentResponse
 
@@ -30,6 +30,12 @@ class ChatMessageResponse(BaseModel):
     content: str
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+    @field_serializer("payload")
+    def serialize_public_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # Full RAG candidates are persisted for agent continuity, not exposed as
+        # part of the public chat-history contract.
+        return {key: value for key, value in payload.items() if not key.startswith("_")}
 
 
 class ChatMessageListResponse(BaseModel):

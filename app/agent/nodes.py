@@ -2,9 +2,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.agent.prompts import build_rag_query
-from app.agent.state import AgentState
-from app.schemas.ai import AgentError, RAGRequest, RAGResponse, VLMRequest, VLMResponse
+from app.agent.state import AgentState, ChatHistoryMessage
+from app.schemas.ai import (
+    AgentError,
+    IntentClassification,
+    QueryRefinement,
+    RAGRequest,
+    RAGResponse,
+    RetrievalPlan,
+    VLMRequest,
+    VLMResponse,
+)
 from app.schemas.recommendation import AgentResponse
 from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
@@ -25,18 +33,28 @@ def _terms_from_item(item: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
     return {_term(item.get(key)) for key in keys if _term(item.get(key))}
 
 
-def _has_profile_context(user_profile: dict[str, Any]) -> bool:
-    return any(bool(value) for value in user_profile.values())
+def _item_ref(item: dict[str, Any]) -> str | None:
+    for key in ("item_id", "product_url", "image_url"):
+        item_ref = str(item.get(key) or "").strip()
+        if item_ref:
+            return item_ref
+    return None
 
 
-def _has_vlm_closet_signal(vlm_items: list[dict[str, Any]]) -> bool:
-    for item in vlm_items:
-        source = _term(item.get("source"))
-        item_id = _term(item.get("item_id") or item.get("closet_item_id"))
-        product_url = _term(item.get("product_url"))
-        if source == "closet" or item_id.startswith("closet") or product_url.startswith("closet://"):
-            return True
-    return False
+def _normalize_chat_history(value: Any) -> list[ChatHistoryMessage] | None:
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[ChatHistoryMessage] = []
+    for message in value:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        content = str(message.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            return None
+        normalized.append({"role": role, "content": content})
+    return normalized
 
 
 class AgentNodes:
@@ -55,6 +73,34 @@ class AgentNodes:
         if not str(state.get("query") or "").strip():
             state["error"] = build_error("INVALID_INPUT", "사용자 요청(query)이 비어 있습니다.", False, "agent")
             return state
+
+        chat_history = _normalize_chat_history(state.get("chat_history", []))
+        if chat_history is None:
+            state["error"] = build_error("INVALID_CHAT_HISTORY", "대화 내역 형식이 올바르지 않습니다.", False, "agent")
+            return state
+        state["chat_history"] = chat_history
+        state["resolved_query"] = str(state["query"]).strip()
+
+        previous_rag_results = state.get("previous_rag_results", [])
+        if not isinstance(previous_rag_results, list):
+            # Previous context is an optimization, so stale data must not fail a new turn.
+            previous_rag_results = []
+        state["previous_rag_results"] = [
+            item for item in previous_rag_results if isinstance(item, dict)
+        ]
+        state["candidate_pool"] = list(state["previous_rag_results"])
+        previous_shown_item_refs = state.get("previous_shown_item_refs", [])
+        if not isinstance(previous_shown_item_refs, list):
+            previous_shown_item_refs = []
+        state["previous_shown_item_refs"] = list(
+            dict.fromkeys(
+                str(item_ref).strip()
+                for item_ref in previous_shown_item_refs
+                if str(item_ref).strip()
+            )
+        )
+        if state.get("previous_retrieval_target") not in {"closet", "musinsa", "hybrid"}:
+            state["previous_retrieval_target"] = None
 
         if not isinstance(state.get("image_urls", []), list):
             state["error"] = build_error("INVALID_INPUT", "image_urls 형식이 올바르지 않습니다.", False, "agent")
@@ -125,50 +171,176 @@ class AgentNodes:
         return state
 
     async def intent_classifier_node(self, state: AgentState) -> AgentState:
-        query = _term(state.get("query"))
-        has_closet_items = bool(state.get("has_closet_items") or state.get("closet_items"))
-        use_closet_style = bool(state.get("use_closet_style", True))
-        user_profile = state.get("user_profile") or {}
-        vlm_items = state.get("vlm_items") or []
-        has_profile_context = _has_profile_context(user_profile)
-        has_vlm_closet_signal = _has_vlm_closet_signal(vlm_items)
+        try:
+            decision = await self.llm_service.classify_intent(
+                query=state["query"],
+                chat_history=state.get("chat_history", []),
+                has_image=bool(state.get("has_image")),
+            )
+            classification = IntentClassification.model_validate(decision)
+            state["intent"] = classification.intent
+            state["intent_reason"] = classification.reason
+        except ValidationError:
+            state["error"] = build_error(
+                "INTENT_INVALID_RESPONSE",
+                "요청 분류 결과 형식이 올바르지 않습니다.",
+                True,
+                "llm",
+            )
+        except Exception:
+            state["error"] = build_error(
+                "INTENT_CLASSIFICATION_FAILED",
+                "요청 유형을 분류하지 못했습니다. 다시 시도해주세요.",
+                True,
+                "llm",
+            )
+        return state
 
-        # Explicit user intent wins before style/profile-based defaults.
-        closet_only_keywords = [
-            "내 옷장",
-            "내옷장",
-            "옷장 안에서",
-            "옷장 안",
-            "내 옷으로",
-            "내옷으로",
-            "가진 옷",
-            "가지고 있는 옷",
-            "closet",
-        ]
-        musinsa_keywords = ["무신사", "구매", "살 만한", "살만한", "상품", "사고 싶은", "buy", "musinsa"]
+    async def general_chat_response_node(self, state: AgentState) -> AgentState:
+        try:
+            response = await self.llm_service.compose_general_chat(
+                query=state["query"],
+                chat_history=state.get("chat_history", []),
+            )
+            state["final_response"] = AgentResponse.model_validate(response).model_dump()
+            state["final_answer"] = state["final_response"]
+        except ValidationError:
+            state["error"] = build_error(
+                "GENERAL_CHAT_INVALID_RESPONSE",
+                "일반 대화 응답 형식이 올바르지 않습니다.",
+                True,
+                "llm",
+            )
+            return await self.error_response_node(state)
+        except Exception:
+            state["error"] = build_error(
+                "GENERAL_CHAT_FAILED",
+                "답변 생성에 실패했습니다. 다시 시도해주세요.",
+                True,
+                "llm",
+            )
+            return await self.error_response_node(state)
+        return state
 
-        state["intent"] = "style_recommendation"
-        if any(keyword in query for keyword in closet_only_keywords):
-            state["retrieval_target"] = "closet"
-        elif any(keyword in query for keyword in musinsa_keywords):
-            state["retrieval_target"] = "musinsa"
-        elif has_closet_items:
-            state["retrieval_target"] = "hybrid"
-        elif has_vlm_closet_signal:
-            state["retrieval_target"] = "hybrid"
-        elif use_closet_style and has_profile_context:
-            state["retrieval_target"] = "hybrid"
-        else:
-            state["retrieval_target"] = "musinsa"
+    async def query_refiner_node(self, state: AgentState) -> AgentState:
+        if state.get("error"):
+            return state
+        try:
+            refined_query = await self.llm_service.refine_query(
+                query=state["query"],
+                chat_history=state.get("chat_history", []),
+                vlm_items=state.get("vlm_items", []),
+            )
+            state["resolved_query"] = QueryRefinement(query=refined_query).query
+        except ValidationError:
+            state["error"] = build_error(
+                "QUERY_REFINEMENT_INVALID_RESPONSE",
+                "검색 질의 정제 결과 형식이 올바르지 않습니다.",
+                True,
+                "llm",
+            )
+        except Exception:
+            state["error"] = build_error(
+                "QUERY_REFINEMENT_FAILED",
+                "검색 질의를 정리하지 못했습니다. 다시 시도해주세요.",
+                True,
+                "llm",
+            )
+        return state
+
+    async def retrieval_planner_node(self, state: AgentState) -> AgentState:
+        if state.get("error"):
+            return state
+        try:
+            raw_plan = await self.llm_service.plan_retrieval(
+                query=state.get("resolved_query") or state["query"],
+                original_query=state["query"],
+                chat_history=state.get("chat_history", []),
+                previous_rag_results=state.get("previous_rag_results", []),
+                previous_shown_item_refs=state.get("previous_shown_item_refs", []),
+                previous_rag_query=state.get("previous_rag_query"),
+                previous_retrieval_target=state.get("previous_retrieval_target"),
+                closet_items=state.get("closet_items", []),
+                user_profile=state.get("user_profile", {}),
+                vlm_items=state.get("vlm_items", []),
+                use_closet_style=state.get("use_closet_style", True),
+            )
+            plan = RetrievalPlan.model_validate(raw_plan)
+            state["retrieval_action"] = plan.action
+            state["retrieval_target"] = plan.retrieval_target
+            state["candidate_scope"] = plan.candidate_scope
+            state["selected_rag_item_refs"] = plan.selected_item_refs
+            state["retrieval_reason"] = plan.reason
+        except ValidationError:
+            state["error"] = build_error(
+                "RETRIEVAL_PLAN_INVALID_RESPONSE",
+                "검색 계획 결과 형식이 올바르지 않습니다.",
+                True,
+                "llm",
+            )
+        except Exception:
+            state["error"] = build_error(
+                "RETRIEVAL_PLANNING_FAILED",
+                "검색 방법을 결정하지 못했습니다. 다시 시도해주세요.",
+                True,
+                "llm",
+            )
+        return state
+
+    async def reuse_rag_results_node(self, state: AgentState) -> AgentState:
+        refs = state.get("selected_rag_item_refs", [])
+        previous_items = state.get("previous_rag_results", [])
+        shown_refs = set(state.get("previous_shown_item_refs", []))
+        candidate_scope = state.get("candidate_scope", "all")
+        items_by_ref: dict[str, dict[str, Any]] = {}
+        for item in previous_items:
+            for key in ("item_id", "product_url", "image_url"):
+                item_ref = str(item.get(key) or "").strip()
+                if item_ref:
+                    items_by_ref.setdefault(item_ref, item)
+
+        selected = []
+        selected_identity_refs: set[str] = set()
+        for item_ref in refs:
+            item = items_by_ref.get(item_ref)
+            if item is None:
+                continue
+            identity_ref = _item_ref(item)
+            if not identity_ref or identity_ref in selected_identity_refs:
+                continue
+            was_shown = identity_ref in shown_refs
+            if candidate_scope == "shown" and not was_shown:
+                continue
+            if candidate_scope == "unseen" and was_shown:
+                continue
+            selected.append(item)
+            selected_identity_refs.add(identity_ref)
+        try:
+            normalized = RAGResponse.model_validate({"items": selected, "message": "reused"})
+            state["rag_results"] = normalized.model_dump()["items"]
+        except ValidationError:
+            # Corrupt/stale prior state is not fatal; the graph will run fresh retrieval.
+            state["rag_results"] = []
+        state["rag_items"] = state["rag_results"]
+        state["has_rag_result"] = bool(state["rag_results"])
+        state["rag_reused"] = bool(state["rag_results"])
+        if not state["rag_reused"]:
+            # Keep the trace and downstream cache bookkeeping aligned with the
+            # actual path when an invalid/exhausted reuse falls back to RAG.
+            state["retrieval_action"] = "retrieve"
         return state
 
     async def build_rag_request_node(self, state: AgentState) -> AgentState:
-        # Combine user text, VLM metadata, profile, and context into one RAG contract.
+        # The LLM refiner has already merged conversation and VLM context.
         context = state.get("context") or {}
         vlm_items = state.get("vlm_items") or []
         user_profile = state.get("user_profile") or {}
-        query = build_rag_query({"items": vlm_items}, state["query"])
+        query = state.get("resolved_query") or state["query"]
         filters = self._build_rag_filters(context, user_profile, vlm_items)
+        if state.get("candidate_scope") == "unseen":
+            excluded_refs = state.get("previous_shown_item_refs", [])
+            if excluded_refs:
+                filters["excluded_item_refs"] = excluded_refs
 
         request = RAGRequest(
             user_id=state["user_id"],
@@ -252,6 +424,7 @@ class AgentNodes:
 
         state["rag_request"] = rag_request
         state["rag_results"] = rag_response.get("items", [])
+        state["candidate_pool"] = list(state["rag_results"])
         state["rag_items"] = state["rag_results"]
         return state
 
@@ -294,16 +467,21 @@ class AgentNodes:
         state["fallback_count"] = fallback_count + 1
         state["rag_request"] = rag_request
         state["rag_results"] = rag_response.get("items", [])
+        state["candidate_pool"] = list(state["rag_results"])
         state["rag_items"] = state["rag_results"]
         state["has_rag_result"] = bool(state["rag_results"])
         return state
 
     async def style_ranker_node(self, state: AgentState) -> AgentState:
-        state["ranked_items"] = sorted(
-            state.get("rag_results", []),
-            key=lambda item: self._ranking_score(item, state),
-            reverse=True,
-        )
+        if state.get("rag_reused"):
+            # The planner's selected refs are already ordered for the follow-up.
+            state["ranked_items"] = list(state.get("rag_results", []))
+        else:
+            state["ranked_items"] = sorted(
+                state.get("rag_results", []),
+                key=lambda item: self._ranking_score(item, state),
+                reverse=True,
+            )
         return state
 
     def _ranking_score(self, item: dict[str, Any], state: AgentState | None = None) -> float:
@@ -316,7 +494,7 @@ class AgentNodes:
             score += self._preferred_style_bonus(item, state.get("user_profile") or {})
             score += self._closet_metadata_bonus(item, state.get("closet_items") or [])
         else:
-            score += self._query_relevance_bonus(item, state.get("query", ""))
+            score += self._query_relevance_bonus(item, state.get("resolved_query") or state.get("query", ""))
         return score
 
     def _base_ranking_score(self, item: dict[str, Any]) -> float:
@@ -365,7 +543,7 @@ class AgentNodes:
         try:
             # The LLM still has to satisfy the public backend response contract.
             response = await self.llm_service.compose_recommendation(
-                state["query"],
+                state.get("resolved_query") or state["query"],
                 state.get("vlm_items", []),
                 state.get("ranked_items", []),
                 state.get("retrieval_target", "musinsa"),
@@ -375,6 +553,7 @@ class AgentNodes:
                 chat_history=state.get("chat_history", []),
             )
             state["final_response"] = AgentResponse.model_validate(response).model_dump()
+            state["final_answer"] = state["final_response"]
         except ValidationError:
             state["error"] = build_error("FINAL_RESPONSE_INVALID", "최종 추천 결과 형식이 올바르지 않습니다.", True, "llm")
             return await self.error_response_node(state)
@@ -396,4 +575,5 @@ class AgentNodes:
             "recommendations": [],
             "style_guide": None,
         }
+        state["final_answer"] = state["final_response"]
         return state

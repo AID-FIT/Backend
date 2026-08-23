@@ -27,6 +27,11 @@ class RecommendationService:
         image_url: str | None = None,
         closet_item_id: str | None = None,
         chat_history: list[dict] | None = None,
+        previous_rag_results: list[dict] | None = None,
+        previous_shown_item_refs: list[str] | None = None,
+        previous_rag_query: str | None = None,
+        previous_retrieval_target: str | None = None,
+        return_trace: bool = False,
     ) -> dict:
         """비영속 추천 생성. 홈 피드처럼 결과를 저장하지 않는 경로에서 사용한다."""
         # Centralize image normalization before entering the LangGraph pipeline.
@@ -43,6 +48,11 @@ class RecommendationService:
             image_url=image_url or (normalized_image_urls[0] if normalized_image_urls else None),
             closet_item_id=closet_item_id,
             chat_history=chat_history or [],
+            previous_rag_results=previous_rag_results or [],
+            previous_shown_item_refs=previous_shown_item_refs or [],
+            previous_rag_query=previous_rag_query,
+            previous_retrieval_target=previous_retrieval_target,
+            return_trace=return_trace,
         )
 
     async def create_and_persist(

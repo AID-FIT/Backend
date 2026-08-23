@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentError(BaseModel):
@@ -11,6 +11,55 @@ class AgentError(BaseModel):
     message: str
     retryable: bool
     source: Literal["agent", "vlm", "rag", "llm", "backend"]
+
+
+class IntentClassification(BaseModel):
+    """LLM output used by the graph's first routing decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["general_chat", "fashion_service"]
+    reason: str | None = None
+
+
+class QueryRefinement(BaseModel):
+    """Standalone search query produced from text, history, and VLM metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+
+    @field_validator("query")
+    @classmethod
+    def require_non_blank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value.strip()
+
+
+class RetrievalPlan(BaseModel):
+    """LLM decision for source routing and prior-result reuse."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["reuse", "retrieve"]
+    retrieval_target: Literal["closet", "musinsa", "hybrid"]
+    candidate_scope: Literal["all", "shown", "unseen"] = "all"
+    selected_item_refs: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class GeneralChatAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def require_non_blank_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must not be blank")
+        return value.strip()
 
 
 class VLMRequest(BaseModel):
