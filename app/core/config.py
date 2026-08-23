@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
-    gemini_timeout_seconds: float = 30.0
+    # Gemini 3 models think before answering, so 30s times out on real requests.
+    gemini_timeout_seconds: float = 60.0
+    vlm_model: str = ""
+    vlm_timeout_seconds: float = 30.0
+    vlm_max_concurrency: int = 4
+    vlm_max_image_bytes: int = 8 * 1024 * 1024
+    vlm_max_items_per_image: int = 8
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False
@@ -33,6 +39,11 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
+
+    @property
+    def vlm_model_name(self) -> str:
+        # Vision falls back to the shared Gemini model unless it is pinned separately.
+        return self.vlm_model or self.gemini_model
 
     @property
     def upload_dir(self) -> Path:
