@@ -490,3 +490,92 @@ def test_invalid_llm_response_becomes_public_error() -> None:
 
     assert result["status"] == "error"
     assert result["message"] == "최종 추천 결과 형식이 올바르지 않습니다."
+
+
+def outfit_vlm_response(*items: dict) -> dict:
+    return {"items": list(items), "is_fashion_item": True}
+
+
+def test_outfit_photo_does_not_narrow_filters_to_one_garment() -> None:
+    # A full-body photo has no single category or color, so neither may filter retrieval.
+    vlm_response = outfit_vlm_response(
+        {"category": "아우터", "color": "blue", "sense_of_season": "fall"},
+        {"category": "바지", "color": "black", "sense_of_season": "summer"},
+        {"category": "신발", "color": "black", "sense_of_season": "fall"},
+    )
+    pipeline, _, rag, _ = build_pipeline(vlm_service=FakeVlmService(response=vlm_response))
+
+    asyncio.run(
+        pipeline.run(
+            query="이 코디에 어울리는 가방 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/outfit_001.jpg"],
+        )
+    )
+
+    filters = rag.calls[0]["filters"]
+    assert "category" not in filters
+    assert "color" not in filters
+    # Seasons disagree here, so no season filter either.
+    assert "sense_of_season" not in filters
+    # Every garment still reaches retrieval as context.
+    assert len(rag.calls[0]["vlm_items"]) == 3
+
+
+def test_outfit_photo_keeps_a_unanimous_season_filter() -> None:
+    vlm_response = outfit_vlm_response(
+        {"category": "아우터", "color": "blue", "sense_of_season": "fall"},
+        {"category": "바지", "color": "black", "sense_of_season": "fall"},
+    )
+    pipeline, _, rag, _ = build_pipeline(vlm_service=FakeVlmService(response=vlm_response))
+
+    asyncio.run(
+        pipeline.run(
+            query="이 코디에 어울리는 신발 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/outfit_001.jpg"],
+        )
+    )
+
+    assert rag.calls[0]["filters"]["sense_of_season"] == "fall"
+
+
+def test_outfit_items_all_reach_the_rag_query_and_llm() -> None:
+    vlm_response = outfit_vlm_response(
+        {"category": "아우터", "color": "blue", "material": "denim"},
+        {"category": "바지", "color": "black", "material": "corduroy"},
+    )
+    pipeline, _, rag, llm = build_pipeline(vlm_service=FakeVlmService(response=vlm_response))
+
+    asyncio.run(
+        pipeline.run(
+            query="이 코디에 어울리는 모자 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/outfit_001.jpg"],
+        )
+    )
+
+    rag_query = rag.calls[0]["query"]
+    assert "denim" in rag_query and "corduroy" in rag_query
+    assert len(llm.calls[0]["vlm_items"]) == 2
+
+
+def test_context_filters_still_win_over_outfit_inference() -> None:
+    vlm_response = outfit_vlm_response(
+        {"category": "아우터", "color": "blue", "sense_of_season": "fall"},
+        {"category": "바지", "color": "black", "sense_of_season": "summer"},
+    )
+    pipeline, _, rag, _ = build_pipeline(vlm_service=FakeVlmService(response=vlm_response))
+
+    asyncio.run(
+        pipeline.run(
+            query="이 코디에 어울리는 신발 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/outfit_001.jpg"],
+            context={"category": "신발", "season": "fall"},
+        )
+    )
+
+    filters = rag.calls[0]["filters"]
+    assert filters["category"] == "신발"
+    assert filters["season"] == "fall"
