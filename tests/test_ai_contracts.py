@@ -1,7 +1,15 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.ai import RAGItem, RAGRequest, RAGResponse, VLMResponse
+from app.schemas.ai import (
+    IntentClassification,
+    QueryRefinement,
+    RAGItem,
+    RAGRequest,
+    RAGResponse,
+    RetrievalPlan,
+    VLMResponse,
+)
 from app.schemas.recommendation import AgentResponse
 
 
@@ -84,3 +92,27 @@ def test_agent_response_contract_validates_llm_output() -> None:
     )
 
     assert response.status == "success"
+
+
+def test_llm_routing_contracts_accept_structured_outputs() -> None:
+    intent = IntentClassification(intent="fashion_service", reason="styling request")
+    refinement = QueryRefinement(query="화이트 니트에 어울리는 봄 팬츠")
+    plan = RetrievalPlan(
+        action="reuse",
+        retrieval_target="musinsa",
+        candidate_scope="unseen",
+        selected_item_refs=["item_001"],
+    )
+
+    assert intent.intent == "fashion_service"
+    assert refinement.query.endswith("봄 팬츠")
+    assert plan.candidate_scope == "unseen"
+    assert plan.selected_item_refs == ["item_001"]
+
+
+def test_llm_routing_contracts_reject_unknown_decisions() -> None:
+    with pytest.raises(ValidationError):
+        IntentClassification(intent="rule_based_route")
+
+    with pytest.raises(ValidationError):
+        RetrievalPlan(action="skip", retrieval_target="musinsa")

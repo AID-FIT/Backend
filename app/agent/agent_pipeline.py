@@ -1,19 +1,48 @@
 from langgraph.graph import END, StateGraph
 
 from app.agent.nodes import AgentNodes
-from app.agent.state import AgentState
+from app.agent.state import AgentState, ChatHistoryMessage
+
+
+def _recommendation_item_refs(response: dict) -> list[str]:
+    refs: list[str] = []
+    for item in response.get("recommendations") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("item_id", "product_url", "image_url"):
+            item_ref = str(item.get(key) or "").strip()
+            if item_ref:
+                refs.append(item_ref)
+                break
+    return list(dict.fromkeys(refs))
 
 
 def route_after_validation(state: AgentState) -> str:
     return "error" if state.get("error") else "context_check"
 
 
-def route_after_context_check(state: AgentState) -> str:
-    return "vlm" if state.get("has_image") else "intent"
+def route_after_intent(state: AgentState) -> str:
+    if state.get("error"):
+        return "error"
+    if state.get("intent") == "general_chat":
+        return "general_chat"
+    return "vlm" if state.get("has_image") else "query_refiner"
 
 
 def route_after_fashion_check(state: AgentState) -> str:
-    return "error" if state.get("error") else "intent"
+    return "error" if state.get("error") else "query_refiner"
+
+
+def route_after_retrieval_planner(state: AgentState) -> str:
+    if state.get("error"):
+        return "error"
+    return "reuse" if state.get("retrieval_action") == "reuse" else "retrieve"
+
+
+def route_after_reuse(state: AgentState) -> str:
+    if state.get("error"):
+        return "error"
+    return "style_ranker" if state.get("has_rag_result") else "retrieve"
 
 
 def retrieval_router(state: AgentState) -> str:
@@ -48,9 +77,13 @@ class AidFitAgentPipeline:
         graph = StateGraph(AgentState)
         graph.add_node("input_validation", self.nodes.input_validation_node)
         graph.add_node("context_check", self.nodes.context_check_node)
+        graph.add_node("intent_classifier", self.nodes.intent_classifier_node)
+        graph.add_node("general_chat_response", self.nodes.general_chat_response_node)
         graph.add_node("vlm", self.nodes.vlm_node)
         graph.add_node("fashion_item_check", self.nodes.fashion_item_check_node)
-        graph.add_node("intent_classifier", self.nodes.intent_classifier_node)
+        graph.add_node("query_refiner", self.nodes.query_refiner_node)
+        graph.add_node("retrieval_planner", self.nodes.retrieval_planner_node)
+        graph.add_node("reuse_rag_results", self.nodes.reuse_rag_results_node)
         graph.add_node("build_rag_request", self.nodes.build_rag_request_node)
         graph.add_node("closet_rag", self.nodes.closet_rag_node)
         graph.add_node("musinsa_rag", self.nodes.musinsa_rag_node)
@@ -67,18 +100,35 @@ class AidFitAgentPipeline:
             route_after_validation,
             {"context_check": "context_check", "error": "error_response"},
         )
+        graph.add_edge("context_check", "intent_classifier")
         graph.add_conditional_edges(
-            "context_check",
-            route_after_context_check,
-            {"vlm": "vlm", "intent": "intent_classifier"},
+            "intent_classifier",
+            route_after_intent,
+            {
+                "general_chat": "general_chat_response",
+                "vlm": "vlm",
+                "query_refiner": "query_refiner",
+                "error": "error_response",
+            },
         )
+        graph.add_edge("general_chat_response", END)
         graph.add_edge("vlm", "fashion_item_check")
         graph.add_conditional_edges(
             "fashion_item_check",
             route_after_fashion_check,
-            {"intent": "intent_classifier", "error": "error_response"},
+            {"query_refiner": "query_refiner", "error": "error_response"},
         )
-        graph.add_edge("intent_classifier", "build_rag_request")
+        graph.add_edge("query_refiner", "retrieval_planner")
+        graph.add_conditional_edges(
+            "retrieval_planner",
+            route_after_retrieval_planner,
+            {"reuse": "reuse_rag_results", "retrieve": "build_rag_request", "error": "error_response"},
+        )
+        graph.add_conditional_edges(
+            "reuse_rag_results",
+            route_after_reuse,
+            {"style_ranker": "style_ranker", "retrieve": "build_rag_request", "error": "error_response"},
+        )
         graph.add_conditional_edges(
             "build_rag_request",
             retrieval_router,
@@ -119,7 +169,11 @@ class AidFitAgentPipeline:
         recommendation_target: str = "musinsa",
         image_url: str | None = None,
         closet_item_id: str | None = None,
-        chat_history: list[dict] | None = None,
+        chat_history: list[ChatHistoryMessage] | None = None,
+        previous_rag_results: list[dict] | None = None,
+        previous_shown_item_refs: list[str] | None = None,
+        previous_rag_query: str | None = None,
+        previous_retrieval_target: str | None = None,
         return_trace: bool = False,
     ) -> dict:
         # Keep old single-image callers compatible with the new multi-image path.
@@ -136,21 +190,62 @@ class AidFitAgentPipeline:
             "recommendation_target": recommendation_target,
             "context": context or {},
             "chat_history": chat_history or [],
+            "previous_rag_results": previous_rag_results or [],
+            "previous_shown_item_refs": previous_shown_item_refs or [],
+            "previous_rag_query": previous_rag_query,
+            "previous_retrieval_target": previous_retrieval_target,
+            "resolved_query": query,
             "vlm_items": [],
             "rag_results": [],
+            "candidate_pool": previous_rag_results or [],
             "ranked_items": [],
+            "selected_rag_item_refs": [],
+            "candidate_scope": "all",
+            "rag_reused": False,
             "fallback_count": 0,
             "error": None,
         }
         result = await self.graph.ainvoke(state)
         if return_trace:
+            response = result["final_response"]
+            current_shown_item_refs = _recommendation_item_refs(response)
+            # An unseen-only request can fall through from an exhausted reuse
+            # cache to fresh RAG while retrieval_action still says "reuse".
+            # The scope, rather than the original action, determines whether
+            # previously shown refs must stay excluded on following turns.
+            preserve_shown_history = bool(result.get("rag_reused")) or (
+                result.get("candidate_scope") == "unseen"
+            )
+            shown_item_refs = list(
+                dict.fromkeys(
+                    [
+                        *((previous_shown_item_refs or []) if preserve_shown_history else []),
+                        *current_shown_item_refs,
+                    ]
+                )
+            )
+            candidate_pool = (
+                result.get("candidate_pool", [])
+                if result.get("intent") == "fashion_service"
+                else []
+            )
             return {
-                "response": result["final_response"],
+                "response": response,
                 "vlm_items": result.get("vlm_items", []),
                 "ranked_items": result.get("ranked_items", []),
                 "rag_items": result.get("rag_results", []),
+                "candidate_pool": candidate_pool,
+                "shown_item_refs": shown_item_refs,
                 "retrieval_target": result.get("retrieval_target", recommendation_target),
                 "intent": result.get("intent"),
+                "intent_reason": result.get("intent_reason"),
+                "resolved_query": result.get("resolved_query", query),
+                "rag_query": result.get("rag_query"),
+                "retrieval_action": result.get("retrieval_action"),
+                "candidate_scope": result.get("candidate_scope", "all"),
+                "retrieval_reason": result.get("retrieval_reason"),
+                "rag_reused": result.get("rag_reused", False),
+                "selected_rag_item_refs": result.get("selected_rag_item_refs", []),
                 "error": result.get("error"),
             }
         return result["final_response"]

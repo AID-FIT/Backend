@@ -18,11 +18,32 @@ class RagService:
         return RAGResponse.model_validate(response).model_dump()
 
     async def _mock_search_request(self, request: RAGRequest) -> dict:
-        items = await self.search(
-            request.query,
-            limit=request.top_k,
-            refresh_seed=int(request.filters.get("refresh_seed") or 0),
-        )
+        excluded_item_refs = request.filters.get("excluded_item_refs") or []
+        refresh_seed = int(request.filters.get("refresh_seed") or 0)
+
+        if request.retrieval_target == "closet":
+            items = self._search_closet(request, limit=request.top_k, refresh_seed=refresh_seed)
+        elif request.retrieval_target == "musinsa":
+            items = await self.search(
+                request.query,
+                limit=request.top_k,
+                refresh_seed=refresh_seed,
+                excluded_item_refs=excluded_item_refs,
+            )
+        else:
+            closet_items = self._search_closet(
+                request,
+                limit=request.top_k,
+                refresh_seed=refresh_seed,
+            )
+            catalog_items = await self.search(
+                request.query,
+                limit=request.top_k,
+                refresh_seed=refresh_seed,
+                excluded_item_refs=excluded_item_refs,
+            )
+            items = self._interleave(closet_items, catalog_items)[: request.top_k]
+
         return {
             "items": [self._normalize_item(item) for item in items],
             "message": "success" if items else "검색 결과가 없습니다.",
@@ -37,13 +58,136 @@ class RagService:
         query: str,
         limit: int = 5,
         refresh_seed: int = 0,
+        excluded_item_refs: list[str] | None = None,
     ) -> list[dict]:
-        catalog = self._mock_catalog()
+        excluded_refs = {
+            str(item_ref).strip()
+            for item_ref in excluded_item_refs or []
+            if str(item_ref).strip()
+        }
+        catalog = [
+            item
+            for item in self._mock_catalog()
+            if not excluded_refs.intersection(
+                str(item.get(key) or "").strip()
+                for key in ("item_id", "product_url", "image_url")
+                if str(item.get(key) or "").strip()
+            )
+        ]
         if not catalog or limit <= 0:
             return []
 
         start = (max(refresh_seed, 0) * limit) % len(catalog)
         return [catalog[(start + offset) % len(catalog)] for offset in range(min(limit, len(catalog)))]
+
+    def _search_closet(
+        self,
+        request: RAGRequest,
+        limit: int,
+        refresh_seed: int = 0,
+    ) -> list[dict]:
+        """Return only owned items supplied by the authenticated backend path."""
+        if limit <= 0:
+            return []
+
+        excluded_refs = {
+            str(item_ref).strip()
+            for item_ref in request.filters.get("excluded_item_refs") or []
+            if str(item_ref).strip()
+        }
+        reference_refs = {
+            item_ref
+            for vlm_item in request.vlm_items
+            if isinstance(vlm_item, dict)
+            for item_ref in self._item_refs(
+                vlm_item,
+                ("closet_item_id", "item_id", "product_url", "image_url", "thumbnail_url"),
+            )
+        }
+
+        candidates: list[dict] = []
+        for closet_item in request.closet_items:
+            if not isinstance(closet_item, dict):
+                continue
+            item_refs = self._item_refs(
+                closet_item,
+                ("closet_item_id", "item_id", "product_url", "image_url"),
+            )
+            if excluded_refs.intersection(item_refs) or reference_refs.intersection(item_refs):
+                continue
+
+            candidate = {
+                **closet_item,
+                "item_id": closet_item.get("closet_item_id") or closet_item.get("item_id"),
+                "source": "closet",
+                "name": closet_item.get("name") or closet_item.get("item_name"),
+                "final_score": self._closet_relevance_score(closet_item, request),
+            }
+            candidates.append(candidate)
+
+        candidates.sort(key=lambda item: float(item.get("final_score") or 0.0), reverse=True)
+        if not candidates:
+            return []
+        start = (max(refresh_seed, 0) * limit) % len(candidates)
+        return [
+            candidates[(start + offset) % len(candidates)]
+            for offset in range(min(limit, len(candidates)))
+        ]
+
+    def _closet_relevance_score(self, item: dict, request: RAGRequest) -> float:
+        query = request.query.casefold()
+        score = 0.0
+        searchable_fields = (
+            "name",
+            "brand",
+            "category",
+            "label",
+            "gender",
+            "color",
+            "material",
+            "fit",
+            "pattern",
+            "mood",
+            "sense_of_season",
+        )
+        for key in searchable_fields:
+            value = str(item.get(key) or "").strip().casefold()
+            if value and value in query:
+                score += 0.2
+
+        for key in ("category", "color", "style", "sense_of_season", "gender"):
+            expected = request.filters.get(key)
+            actual = item.get(key)
+            if expected and actual and str(expected).casefold() == str(actual).casefold():
+                score += 0.1
+
+        for vlm_item in request.vlm_items:
+            if not isinstance(vlm_item, dict):
+                continue
+            for key in ("material", "fit", "pattern", "mood", "sense_of_season"):
+                reference_value = vlm_item.get(key)
+                actual = item.get(key)
+                if reference_value and actual and str(reference_value).casefold() == str(actual).casefold():
+                    score += 0.05
+        return min(score, 1.0)
+
+    @staticmethod
+    def _item_refs(item: dict, keys: tuple[str, ...]) -> set[str]:
+        return {
+            str(item.get(key)).strip()
+            for key in keys
+            if item.get(key) is not None and str(item.get(key)).strip()
+        }
+
+    @staticmethod
+    def _interleave(first: list[dict], second: list[dict]) -> list[dict]:
+        combined: list[dict] = []
+        for index in range(max(len(first), len(second))):
+            if index < len(first):
+                combined.append(first[index])
+            if index < len(second):
+                combined.append(second[index])
+        return combined
 
     def _normalize_item(self, item: dict) -> dict:
         # Fill optional catalog fields into the RAG response schema.

@@ -86,7 +86,14 @@ def test_agent_request_contract_full_payload() -> None:
         closet_items=[
             {
                 "closet_item_id": "closet_001",
+                "name": "에이프 헤드 클리어 백",
+                "brand": "베이프",
+                "price": 115000,
                 "category": "가방",
+                "label": "남자 가방",
+                "gender": "men",
+                "image_url": "https://cdn.aidfit.com/closet_001.jpg",
+                "product_url": None,
                 "color": "black",
                 "material": "pvc",
                 "fit": "none",
@@ -103,6 +110,7 @@ def test_agent_request_contract_full_payload() -> None:
     )
 
     assert request.closet_items[0].closet_item_id == "closet_001"
+    assert request.closet_items[0].image_url == "https://cdn.aidfit.com/closet_001.jpg"
     assert request.closet_items[0].sense_of_season == "summer"
     assert request.user_profile is not None
     assert request.user_profile.preferred_styles == ["minimal", "casual"]
