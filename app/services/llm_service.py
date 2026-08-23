@@ -203,6 +203,7 @@ class LlmService:
                 "temperature": 0.4,
                 "responseMimeType": "application/json",
                 "responseSchema": self._response_schema(),
+                "thinkingConfig": {"thinkingLevel": "low"},
             },
         }
 
