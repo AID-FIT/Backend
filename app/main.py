@@ -29,7 +29,7 @@ def _preflight_headers(request: Request) -> dict[str, str]:
 
     return headers
 
-
+# 애플리케이션 팩토리 패턴
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0")
 
@@ -52,8 +52,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+    # 로컬 업로드 폴더 생성 및 정적 파일 제공
+    try:
+        settings.upload_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+    except OSError:
+        pass
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     return app
 

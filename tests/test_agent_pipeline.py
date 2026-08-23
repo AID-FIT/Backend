@@ -71,6 +71,7 @@ class FakeLlmService:
         closet_items: list[dict] | None = None,
         use_closet_style: bool = True,
         user_profile: dict | None = None,
+        chat_history: list[dict] | None = None,
     ) -> dict:
         self.calls.append(
             {
@@ -81,6 +82,7 @@ class FakeLlmService:
                 "closet_items": closet_items or [],
                 "use_closet_style": use_closet_style,
                 "user_profile": user_profile or {},
+                "chat_history": chat_history or [],
             }
         )
         if self.response is not None:
@@ -579,3 +581,28 @@ def test_context_filters_still_win_over_outfit_inference() -> None:
     filters = rag.calls[0]["filters"]
     assert filters["category"] == "신발"
     assert filters["season"] == "fall"
+def test_chat_history_reaches_final_response_generation() -> None:
+    # 후속 질문("더 저렴한 걸로")은 직전 대화가 있어야 이해된다.
+    pipeline, _, _, llm = build_pipeline()
+    history = [
+        {"role": "user", "content": "검은색 재킷에 어울리는 바지 추천해줘"},
+        {"role": "assistant", "content": "회색 와이드 슬랙스를 추천합니다."},
+    ]
+
+    asyncio.run(
+        pipeline.run(
+            query="조금 더 저렴한 제품으로 추천해줘",
+            user_id="user_001",
+            chat_history=history,
+        )
+    )
+
+    assert llm.calls[0]["chat_history"] == history
+
+
+def test_chat_history_defaults_to_empty_for_one_off_requests() -> None:
+    pipeline, _, _, llm = build_pipeline()
+
+    asyncio.run(pipeline.run(query="화이트 니트랑 어울리는 바지 추천해줘", user_id="user_001"))
+
+    assert llm.calls[0]["chat_history"] == []

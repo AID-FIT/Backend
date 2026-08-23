@@ -10,7 +10,7 @@ from app.db.session import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
-
+# 의존성 주입(DI) -> 현재 로그인한 사용자 정보를 가져오는 함수
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
