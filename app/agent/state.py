@@ -19,6 +19,10 @@ class AgentState(TypedDict, total=False):
     image_url: str | None
     closet_item_id: str | None
     recommendation_target: str
+    # True면 검색 계획이 recommendation_target을 덮어쓰지 못한다.
+    lock_retrieval_target: bool
+    # True면 후보를 카테고리별로 번갈아 배치한다(홈 타일용).
+    diversify_by_category: bool
     context: dict[str, Any]
 
     # 후속 질문을 이해하기 위한 직전 대화 내역(시간순)

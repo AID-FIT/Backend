@@ -14,6 +14,7 @@ from app.services.user_service import UserService
 router = APIRouter()
 
 # 스타일 키워드가 하나도 없을 때 쓰는 기본 쿼리.
+_HOME_CANDIDATE_POOL = 20
 _HOME_FALLBACK_QUERY = "오늘 입기 좋은 데일리 코디를 추천해줘."
 
 _MAX_STYLE_KEYWORDS = 3
@@ -69,8 +70,8 @@ def _build_home_query(
         parts.append("주요 색상: " + ", ".join(top_colors))
     if top_moods:
         parts.append("무드: " + ", ".join(top_moods))
-    if top_categories:
-        parts.append("보유 아이템: " + ", ".join(top_categories))
+    # 보유 카테고리는 쿼리에 넣지 않는다. "보유 아이템: 상의, 바지"가 찾는 옷으로
+    # 오독돼 검색이 한 카테고리로 좁혀진다. 옷장 정보는 closet_items로 이미 전달된다.
     if top_seasons:
         parts.append("시즌: " + ", ".join(top_seasons))
 
@@ -154,7 +155,9 @@ async def get_home_recommendation(
         user_id=current_user.id,
         context={
             "refresh_seed": max(refresh_seed, 0),
-            "limit": 5,
+            # 홈은 타일 그리드라 5칸을 채워야 한다. 후보를 5개만 뽑으면 LLM이
+            # 그중 마음에 드는 것만 골라 1~2개로 줄어든다. 넉넉히 뽑아 고르게 한다.
+            "limit": _HOME_CANDIDATE_POOL,
             "age_range": age_range,
             "preferred_style": preference.styles if preference else [],
             "closet_items": closet_payload,
@@ -165,7 +168,13 @@ async def get_home_recommendation(
         closet_items=closet_payload,
         use_closet_style=True,
         user_profile=user_profile,
+        # 홈 타일은 "사러 갈 만한 상품"을 보여주는 자리다. 검색 계획이 closet이나
+        # hybrid를 고르면 사용자가 이미 가진 옷이 타일로 올라온다. 그걸 막는다.
         recommendation_target="musinsa",
+        lock_retrieval_target=True,
+        # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
+        # 된다. 타일이 같은 종류로만 차는 것을 막는다.
+        diversify_by_category=True,
     )
     return RecommendationResponse(**result)
 

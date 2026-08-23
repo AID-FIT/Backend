@@ -274,7 +274,13 @@ class AgentNodes:
             )
             plan = RetrievalPlan.model_validate(raw_plan)
             state["retrieval_action"] = plan.action
-            state["retrieval_target"] = plan.retrieval_target
+            # 홈 피드처럼 호출부가 대상을 정해 둔 경우엔 계획이 덮어쓰지 못한다.
+            # 사용자가 이미 가진 옷을 다시 보여주는 화면이 아니기 때문이다.
+            state["retrieval_target"] = (
+                state["recommendation_target"]
+                if state.get("lock_retrieval_target")
+                else plan.retrieval_target
+            )
             state["candidate_scope"] = plan.candidate_scope
             state["selected_rag_item_refs"] = plan.selected_item_refs
             state["retrieval_reason"] = plan.reason
@@ -506,12 +512,34 @@ class AgentNodes:
             # The planner's selected refs are already ordered for the follow-up.
             state["ranked_items"] = list(state.get("rag_results", []))
         else:
-            state["ranked_items"] = sorted(
+            ranked = sorted(
                 state.get("rag_results", []),
                 key=lambda item: self._ranking_score(item, state),
                 reverse=True,
             )
+            if state.get("diversify_by_category"):
+                ranked = self._spread_by_category(ranked)
+            state["ranked_items"] = ranked
         return state
+
+    def _spread_by_category(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """카테고리를 번갈아 배치한다.
+
+        홈 타일은 코디 한 벌을 보여주는 자리다. 점수순으로만 자르면 상위가
+        한 카테고리(예: 겨울 검정 → 아우터)로 쏠려 LLM에 넘어가는 후보가
+        전부 같은 종류가 된다. 각 카테고리의 1등부터 돌아가며 채운다.
+        """
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            buckets.setdefault(_term(item.get("category")) or "unknown", []).append(item)
+
+        spread: list[dict[str, Any]] = []
+        while buckets:
+            for category in list(buckets):
+                spread.append(buckets[category].pop(0))
+                if not buckets[category]:
+                    del buckets[category]
+        return spread
 
     def _ranking_score(self, item: dict[str, Any], state: AgentState | None = None) -> float:
         score = self._base_ranking_score(item)

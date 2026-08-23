@@ -24,6 +24,8 @@ class RecommendationService:
         user_profile: dict | None = None,
         context: dict | None = None,
         recommendation_target: str = "musinsa",
+        lock_retrieval_target: bool = False,
+        diversify_by_category: bool = False,
         image_url: str | None = None,
         closet_item_id: str | None = None,
         chat_history: list[dict] | None = None,
@@ -45,6 +47,8 @@ class RecommendationService:
             user_profile=user_profile or {},
             context=context or {},
             recommendation_target=recommendation_target,
+            lock_retrieval_target=lock_retrieval_target,
+            diversify_by_category=diversify_by_category,
             image_url=image_url or (normalized_image_urls[0] if normalized_image_urls else None),
             closet_item_id=closet_item_id,
             chat_history=chat_history or [],
@@ -66,6 +70,8 @@ class RecommendationService:
         user_profile: dict | None = None,
         context: dict | None = None,
         recommendation_target: str = "musinsa",
+        lock_retrieval_target: bool = False,
+        diversify_by_category: bool = False,
     ) -> dict:
         """추천을 생성하고 요청/분석/추천/아이템을 DB에 저장한 뒤 응답을 반환한다."""
         normalized_image_urls = image_urls or []
@@ -78,6 +84,8 @@ class RecommendationService:
             user_profile=user_profile or {},
             context=context or {},
             recommendation_target=recommendation_target,
+            lock_retrieval_target=lock_retrieval_target,
+            diversify_by_category=diversify_by_category,
             return_trace=True,
         )
         await self._persist(db, user_id, query, trace)
