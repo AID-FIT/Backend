@@ -45,6 +45,8 @@ class LlmService:
                 },
                 response_schema=self._intent_schema(),
                 temperature=0.0,
+                model=settings.fast_model_name,
+                thinking_budget=settings.llm_fast_thinking_budget,
             )
         return IntentClassification.model_validate(result).model_dump()
 
@@ -67,6 +69,8 @@ class LlmService:
                 },
                 response_schema=self._query_refinement_schema(),
                 temperature=0.1,
+                model=settings.fast_model_name,
+                thinking_budget=settings.llm_fast_thinking_budget,
             )
         return QueryRefinement.model_validate(result).query.strip()
 
@@ -119,6 +123,8 @@ class LlmService:
                 },
                 response_schema=self._retrieval_plan_schema(),
                 temperature=0.0,
+                model=settings.fast_model_name,
+                thinking_budget=settings.llm_fast_thinking_budget,
             )
 
         plan = RetrievalPlan.model_validate(result)
@@ -280,9 +286,24 @@ class LlmService:
         prompt: dict[str, Any],
         response_schema: dict[str, Any],
         temperature: float,
+        model: str | None = None,
+        thinking_budget: int | None = None,
     ) -> dict[str, Any]:
+        """구조화 응답을 받는 공통 경로.
+
+        model과 thinking_budget은 단계마다 다르다. 분류·재작성처럼 추론이 필요 없는
+        호출은 가벼운 모델에 추론을 끄고 돌린다. 둘 다 주지 않으면 기존 동작 그대로다.
+        """
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
+
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "responseMimeType": "application/json",
+            "responseSchema": response_schema,
+        }
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
         payload = {
             "systemInstruction": {"parts": [{"text": system_instruction.strip()}]},
@@ -292,13 +313,12 @@ class LlmService:
                     "parts": [{"text": json.dumps(prompt, ensure_ascii=False)}],
                 }
             ],
-            "generationConfig": {
-                "temperature": temperature,
-                "responseMimeType": "application/json",
-                "responseSchema": response_schema,
-            },
+            "generationConfig": generation_config,
         }
-        url = f"{settings.gemini_base_url.rstrip('/')}/models/{settings.gemini_model}:generateContent"
+        url = (
+            f"{settings.gemini_base_url.rstrip('/')}"
+            f"/models/{model or settings.gemini_model}:generateContent"
+        )
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": settings.gemini_api_key,

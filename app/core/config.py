@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     # Gemini 3 models think before answering, so 30s times out on real requests.
     gemini_timeout_seconds: float = 60.0
+    # 의도 분류·질의 정제·검색 계획처럼 추론이 필요 없는 단계용.
+    # 비워 두면 gemini_model로 떨어져 설정하지 않은 환경은 기존 동작 그대로다.
+    llm_fast_model: str = ""
+    llm_fast_thinking_budget: int = 0
     vlm_model: str = ""
     vlm_timeout_seconds: float = 30.0
     vlm_max_concurrency: int = 4
@@ -57,6 +61,11 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
+
+    @property
+    def fast_model_name(self) -> str:
+        # 가벼운 단계도 지정이 없으면 기존 모델을 쓴다.
+        return self.llm_fast_model or self.gemini_model
 
     @property
     def vlm_model_name(self) -> str:
