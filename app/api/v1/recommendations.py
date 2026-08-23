@@ -74,9 +74,9 @@ def _build_home_query(
     if top_seasons:
         parts.append("시즌: " + ", ".join(top_seasons))
 
-    # 4) 추천 지시
+    # 4) 추천 지시 — "무신사"를 명시해 retrieval planner가 catalog 검색을 택하게 한다.
     if parts:
-        query = ". ".join(parts) + ". 이 취향에 어울리는 오늘의 코디를 추천해줘."
+        query = ". ".join(parts) + ". 이 취향에 어울리는 무신사 상품으로 오늘의 코디를 추천해줘."
     else:
         query = _HOME_FALLBACK_QUERY
 
@@ -165,6 +165,7 @@ async def get_home_recommendation(
         closet_items=closet_payload,
         use_closet_style=True,
         user_profile=user_profile,
+        recommendation_target="musinsa",
     )
     return RecommendationResponse(**result)
 
