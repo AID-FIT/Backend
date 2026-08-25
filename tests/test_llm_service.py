@@ -160,6 +160,8 @@ def test_external_intent_and_query_refinement_use_structured_gemini(monkeypatch)
 
     FakeAsyncClient.response_payload = {
         "query": "화이트 오버핏 니트에 어울리는 봄 미니멀 팬츠",
+        "request_mode": "coordination",
+        "target_category": "바지",
     }
     refined = asyncio.run(
         service.refine_query(
@@ -170,10 +172,20 @@ def test_external_intent_and_query_refinement_use_structured_gemini(monkeypatch)
     )
 
     assert intent["intent"] == "fashion_service"
-    assert refined == "화이트 오버핏 니트에 어울리는 봄 미니멀 팬츠"
+    assert refined == {
+        "query": "화이트 오버핏 니트에 어울리는 봄 미니멀 팬츠",
+        "request_mode": "coordination",
+        "target_category": "바지",
+    }
     assert len(FakeAsyncClient.calls) == 2
     assert FakeAsyncClient.calls[0]["json"]["generationConfig"]["temperature"] == 0.0
-    refine_prompt = json.loads(FakeAsyncClient.calls[1]["json"]["contents"][0]["parts"][0]["text"])
+    refine_call = FakeAsyncClient.calls[1]["json"]
+    assert set(refine_call["generationConfig"]["responseSchema"]["properties"]) == {
+        "query",
+        "request_mode",
+        "target_category",
+    }
+    refine_prompt = json.loads(refine_call["contents"][0]["parts"][0]["text"])
     assert refine_prompt["vlm_items"][0]["color"] == "white"
 
 

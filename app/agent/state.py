@@ -45,6 +45,8 @@ class AgentState(TypedDict, total=False):
     # Agent reasoning state
     # 원문 query는 응답/저장에 유지하고, 이 값은 대화 문맥을 포함한 검색에 사용한다.
     resolved_query: str
+    request_mode: Literal["direct", "coordination", "similarity"]
+    target_category: str | None
     intent: Literal["general_chat", "fashion_service"]
     intent_reason: str | None
     retrieval_target: str

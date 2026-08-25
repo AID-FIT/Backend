@@ -185,6 +185,31 @@ def test_no_category_condition_when_the_query_names_none() -> None:
     assert "category" not in session.search_params
 
 
+def test_coordination_request_does_not_infer_the_reference_category() -> None:
+    session = RecordingSession([row("musinsa_1")])
+
+    search(
+        session,
+        query="화이트 니트와 어울리는 옷 추천해줘",
+        request_mode="coordination",
+    )
+
+    assert "category" not in session.search_params
+
+
+def test_coordination_request_still_applies_an_explicit_target_category() -> None:
+    session = RecordingSession([row("musinsa_1")])
+
+    search(
+        session,
+        query="이 바지와 어울리는 상의 추천해줘",
+        filters={"category": "상의"},
+        request_mode="coordination",
+    )
+
+    assert session.search_params["category"] == "상의"
+
+
 def scores(session, **kwargs) -> dict:
     return search(session, **kwargs)[0]
 
@@ -260,32 +285,29 @@ def test_the_embedded_text_expands_korean_into_catalog_words() -> None:
     assert "반팔티" in embedding.queries[0]
 
 
-def test_the_embedded_text_carries_the_closet_and_taste() -> None:
-    # 옷장과 취향은 필터로 만들 수 없는 신호다. 질의에 실어야 임베딩이 잡는다.
+def test_vague_request_can_use_taste_as_a_search_fallback() -> None:
     embedding = FakeEmbeddingService()
     service = PgVectorRagService(embedding_service=embedding)
     asyncio.run(service.search(
         RecordingSession([row("musinsa_1")]),
         query="오늘 뭐 입지",
-        closet_items=[{"color": "charcoal", "mood": "minimal"}],
         preferred_styles=["스트릿"],
+        use_preference_search=True,
     ))
 
-    assert "charcoal" in embedding.queries[0]
     assert "스트릿" in embedding.queries[0]
 
 
-def test_the_closet_stays_out_when_the_user_turned_it_off() -> None:
+def test_specific_request_does_not_use_taste_by_default() -> None:
     embedding = FakeEmbeddingService()
     service = PgVectorRagService(embedding_service=embedding)
     asyncio.run(service.search(
         RecordingSession([row("musinsa_1")]),
-        query="오늘 뭐 입지",
-        closet_items=[{"color": "charcoal"}],
-        use_closet_style=False,
+        query="흰색 셔츠 추천해줘",
+        preferred_styles=["스트릿"],
     ))
 
-    assert "charcoal" not in embedding.queries[0]
+    assert "스트릿" not in embedding.queries[0]
 
 
 def test_the_category_filter_still_reads_the_users_own_words() -> None:

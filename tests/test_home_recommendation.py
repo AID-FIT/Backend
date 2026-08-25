@@ -46,12 +46,19 @@ def test_home_query_falls_back_without_any_signal() -> None:
     assert infer_target_category(query) is None
 
 
-def test_home_query_leads_with_the_user_prompt() -> None:
-    # 취향 문장 뒤에 붙이면 긴 문맥에 묻히고, "추천" 뒤라 목표 카테고리로도 안 읽힌다.
+def test_specific_home_query_excludes_profile_and_closet_taste() -> None:
     query = home_query(prompt="비 오는 날 입을 옷")
 
     assert query.startswith("비 오는 날 입을 옷")
+    assert "스트릿" not in query
+    assert "black" not in query
+
+
+def test_vague_home_prompt_is_supplemented_with_taste() -> None:
+    query = home_query(prompt="오늘 뭐 입지")
+
     assert "스트릿" in query
+    assert "black" in query
 
 
 def test_search_term_becomes_the_target_category() -> None:
@@ -523,3 +530,11 @@ def test_chip_category_beats_the_inferred_one() -> None:
     request = build_home(category="바지", prompt="상의 추천해줘")
 
     assert request["run_kwargs"]["context"]["category"] == "바지"
+
+
+def test_explicit_home_filter_keeps_taste_out_of_the_search_query() -> None:
+    request = build_home(category="바지")
+    query = request["run_kwargs"]["query"]
+
+    assert "스트릿" not in query
+    assert "black" not in query

@@ -10,6 +10,7 @@ from app.api.deps import get_current_user
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.recommendation import RecommendationCreateRequest, RecommendationResponse
+from app.services.catalog_matching import is_vague_search_request
 from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
 from app.services.target_category import infer_target_category
@@ -59,20 +60,25 @@ def _build_home_query(
     preferred_styles: list[str],
     age_range: str | None = None,
     prompt: str = "",
+    include_taste: bool | None = None,
 ) -> str:
-    """옷장 메타데이터와 사용자 선호를 조합해 벡터 검색에 유효한 쿼리를 만든다.
+    """홈 검색용 요청 또는 취향 질의를 만든다.
 
-    지시문이 아닌 스타일 키워드 중심으로 작성하여 pgvector 임베딩이
-    실제 의류 스타일과 유사도를 잡을 수 있게 한다.
+    일반 홈 추천에서는 취향을 검색 기준으로 쓴다. 사용자가 구체적인 검색어나
+    칩을 골랐을 때는 그 의미가 흐려지지 않도록 취향 문장을 넣지 않는다.
     """
+    request = prompt.strip()
+    if include_taste is None:
+        include_taste = not request or is_vague_search_request(request)
+
     parts: list[str] = []
 
     # 1) 연령대
-    if age_range:
+    if include_taste and age_range:
         parts.append(f"{age_range}")
 
     # 2) 선호 스타일
-    if preferred_styles:
+    if include_taste and preferred_styles:
         parts.append(" ".join(preferred_styles[:_MAX_STYLE_KEYWORDS]) + " 스타일")
 
     # 3) 옷장에서 주요 색상/무드/카테고리 추출
@@ -80,16 +86,17 @@ def _build_home_query(
     moods: Counter[str] = Counter()
     seasons: Counter[str] = Counter()
 
-    for item in closet_items:
-        color = str(item.get("color") or "").strip()
-        mood = str(item.get("mood") or "").strip()
-        season = str(item.get("sense_of_season") or "").strip()
-        if color:
-            colors[color] += 1
-        if mood:
-            moods[mood] += 1
-        if season:
-            seasons[season] += 1
+    if include_taste:
+        for item in closet_items:
+            color = str(item.get("color") or "").strip()
+            mood = str(item.get("mood") or "").strip()
+            season = str(item.get("sense_of_season") or "").strip()
+            if color:
+                colors[color] += 1
+            if mood:
+                moods[mood] += 1
+            if season:
+                seasons[season] += 1
 
     top_colors = [c for c, _ in colors.most_common(2)]
     top_moods = [m for m, _ in moods.most_common(2)]
@@ -105,8 +112,6 @@ def _build_home_query(
         parts.append("시즌: " + ", ".join(top_seasons))
 
     taste = ". ".join(parts)
-    request = prompt.strip()
-
     # 4) 추천 지시 — 홈 검색은 코드에서 무신사로 고정되며, 이 문구는 임베딩
     # 검색어가 구매 가능한 상품 추천이라는 맥락을 유지하도록 돕는다.
     if not request:
@@ -184,16 +189,24 @@ async def _build_home_request(
     preferred_styles = user_profile["preferred_styles"]
     gender = user_profile["gender"]
 
+    selected_category = _allowed(category, _HOME_CATEGORIES)
+    selected_mood = _allowed(mood, _HOME_MOODS)
+    selected_season = _allowed(season, _HOME_SEASONS)
+    has_explicit_filter = any((selected_category, selected_mood, selected_season))
+
     query = _build_home_query(
         closet_items=closet_payload,
         preferred_styles=preferred_styles,
         age_range=age_range,
         prompt=prompt,
+        include_taste=(
+            not has_explicit_filter
+            and (not prompt.strip() or is_vague_search_request(prompt))
+        ),
     )
 
     # 칩으로 고른 카테고리가 질의에서 추론한 값보다 우선한다. 사용자가 직접
     # 누른 것이므로 추측이 이길 이유가 없다.
-    selected_category = _allowed(category, _HOME_CATEGORIES)
     target_category = selected_category or infer_target_category(query)
 
     context: dict = {
@@ -210,10 +223,8 @@ async def _build_home_request(
         context["gender"] = gender
     if selected_category:
         context["category"] = selected_category
-    selected_mood = _allowed(mood, _HOME_MOODS)
     if selected_mood:
         context["mood"] = selected_mood
-    selected_season = _allowed(season, _HOME_SEASONS)
     if selected_season:
         context["season"] = selected_season
 

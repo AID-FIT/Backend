@@ -58,22 +58,26 @@ class PgVectorRagService:
         excluded_item_refs: set[str] | None = None,
         refresh_seed: int = 0,
         vlm_items: list[dict] | None = None,
-        closet_items: list[dict] | None = None,
-        use_closet_style: bool = True,
+        request_mode: str = "direct",
         preferred_styles: list[str] | None = None,
+        use_preference_search: bool = False,
     ) -> list[dict]:
         if not query.strip():
             return []
 
-        effective_filters = self._effective_filters(query, filters or {})
-        # 질의만 임베딩하면 옷장과 취향이 검색에 전혀 반영되지 않는다. 색·핏·무드는
-        # 다중값 문자열이라 필터로 만들기도 어려워, 질의 텍스트에 실어야 잡힌다.
+        effective_filters = self._effective_filters(
+            query,
+            filters or {},
+            infer_category_from_query=request_mode != "coordination",
+        )
+        # 검색 임베딩은 요청/사진 의미를 보존한다. 옷장은 ranker 전용이며,
+        # 취향도 모호한 일반 추천이라고 판정된 경우에만 보완한다.
         search_text = build_search_text(
             query,
             vlm_items=vlm_items,
-            closet_items=closet_items,
-            use_closet_style=use_closet_style,
             preferred_styles=preferred_styles,
+            use_preference_search=use_preference_search,
+            request_mode=request_mode,
         )
         vector = await self.embedding_service.embed_query(search_text)
         conditions, params = self._build_conditions(effective_filters)
@@ -103,9 +107,7 @@ class PgVectorRagService:
             item = self._to_item(dict(row))
             if excluded.intersection({item["item_id"], item.get("product_url") or ""}):
                 continue
-            self._apply_scores(
-                item, intents, effective_filters, closet_items, use_closet_style, preferred_styles
-            )
+            self._apply_scores(item, intents, effective_filters)
             candidates.append(item)
 
         # 벡터 순위와 최종 순위는 다르다. 유사도만으로 자르면 "검정"을 요청해도
@@ -120,18 +122,8 @@ class PgVectorRagService:
         item: dict,
         intents: dict[str, set[str]],
         filters: dict[str, Any],
-        closet_items: list[dict] | None,
-        use_closet_style: bool,
-        preferred_styles: list[str] | None,
     ) -> None:
-        meta = metadata_score(
-            item,
-            intents,
-            filters=filters,
-            closet_items=closet_items,
-            use_closet_style=use_closet_style,
-            preferred_styles=preferred_styles,
-        )
+        meta = metadata_score(item, intents, filters=filters)
         item["metadata_score"] = round(meta, 4)
         item["final_score"] = round(final_score(item["similarity_score"], meta), 4)
 
@@ -182,7 +174,12 @@ class PgVectorRagService:
         start = (refresh_seed * max(limit, 1)) % len(candidates)
         return candidates[start:] + candidates[:start]
 
-    def _effective_filters(self, query: str, filters: dict[str, Any]) -> dict[str, Any]:
+    def _effective_filters(
+        self,
+        query: str,
+        filters: dict[str, Any],
+        infer_category_from_query: bool = True,
+    ) -> dict[str, Any]:
         """카테고리가 정해지지 않았으면 질의에서 뽑는다.
 
         벡터 검색만으로는 "바지에 어울리는 상의"에서 상의를 찾지 못한다.
@@ -190,6 +187,12 @@ class PgVectorRagService:
         찾는 옷의 카테고리를 필터로 못박아야 한다.
         """
         if filters.get("category"):
+            return filters
+
+        # In coordination mode a category mentioned before "어울리는" describes
+        # the reference garment. The Agent supplies a category filter only when
+        # the user explicitly named the kind of candidate they want.
+        if not infer_category_from_query:
             return filters
 
         target = infer_target_category(query)
@@ -201,7 +204,7 @@ class PgVectorRagService:
         """메타데이터 선필터. 벡터 검색 전에 후보를 좁힌다.
 
         `style`과 `preferred_styles`는 여기서 다루지 않는다. `product_vectors`에
-        대응하는 컬럼이 없어 조건으로 만들 수 없고, 임베딩 질의 텍스트로만 쓰인다.
+        대응하는 컬럼이 없고, 프로필 취향은 ranker에서 반영한다.
         """
         conditions: list[str] = []
         params: dict[str, Any] = {}

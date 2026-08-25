@@ -106,7 +106,11 @@ def test_agent_response_contract_validates_llm_output() -> None:
 
 def test_llm_routing_contracts_accept_structured_outputs() -> None:
     intent = IntentClassification(intent="fashion_service", reason="styling request")
-    refinement = QueryRefinement(query="화이트 니트에 어울리는 봄 팬츠")
+    refinement = QueryRefinement(
+        query="화이트 니트에 어울리는 봄 팬츠",
+        request_mode="coordination",
+        target_category="바지",
+    )
     plan = RetrievalPlan(
         action="reuse",
         retrieval_target="musinsa",
@@ -116,8 +120,18 @@ def test_llm_routing_contracts_accept_structured_outputs() -> None:
 
     assert intent.intent == "fashion_service"
     assert refinement.query.endswith("봄 팬츠")
+    assert refinement.request_mode == "coordination"
+    assert refinement.target_category == "바지"
     assert plan.candidate_scope == "unseen"
     assert plan.selected_item_refs == ["item_001"]
+
+
+def test_query_refinement_contract_has_no_filter_output() -> None:
+    assert set(QueryRefinement.model_fields) == {
+        "query",
+        "request_mode",
+        "target_category",
+    }
 
 
 def test_llm_routing_contracts_reject_unknown_decisions() -> None:
