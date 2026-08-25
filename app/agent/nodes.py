@@ -23,6 +23,7 @@ from app.services.catalog_matching import (
 )
 from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
+from app.services.target_category import query_names_a_category
 from app.services.vlm_service import VlmService
 
 
@@ -375,6 +376,7 @@ class AgentNodes:
             context,
             user_profile,
             vlm_items,
+            query=f"{state['query']} {query}",
             request_mode=request_mode,
             target_category=state.get("target_category"),
         )
@@ -384,6 +386,12 @@ class AgentNodes:
                 filters["excluded_item_refs"] = excluded_refs
 
         preferred_styles = user_profile.get("preferred_styles") or []
+        specificity_filters = dict(filters)
+        if "gender" not in context:
+            # A saved profile gender narrows the catalog but does not make a vague
+            # request stylistically specific. Keep profile taste available as the
+            # embedding fallback unless the request supplied gender explicitly.
+            specificity_filters.pop("gender", None)
         use_preference_search = bool(
             state.get("use_closet_style", True)
             and preferred_styles
@@ -391,7 +399,7 @@ class AgentNodes:
                 query,
                 request_mode=request_mode,
                 has_reference_items=bool(vlm_items),
-                filters=filters,
+                filters=specificity_filters,
             )
         )
 
@@ -417,6 +425,7 @@ class AgentNodes:
         context: dict[str, Any],
         user_profile: dict[str, Any],
         vlm_items: list[dict],
+        query: str = "",
         request_mode: str = "direct",
         target_category: str | None = None,
     ) -> dict:
@@ -439,6 +448,12 @@ class AgentNodes:
             if key in context:
                 filters[key] = context[key]
 
+        # 프로필 성별은 카탈로그 조건으로 그대로 내려간다. unisex는 조건이 아니라
+        # "가리지 않는다"는 뜻이라 걸지 않는다(걸면 남녀 상품이 전부 빠진다).
+        profile_gender = user_profile.get("gender")
+        if profile_gender and profile_gender != "unisex" and "gender" not in filters:
+            filters["gender"] = profile_gender
+
         inferred = self._inferred_vlm_filters(vlm_items)
         if target_category and "category" not in filters:
             filters["category"] = target_category
@@ -447,8 +462,10 @@ class AgentNodes:
             # Query Refiner has classified the image as reference context. None of
             # its inferred attributes become candidate hard filters.
             inferred = {}
-        elif target_category:
+        elif target_category or query_names_a_category(query):
             # The LLM's candidate category wins over the photographed category.
+            # The query fallback preserves main's behavior if a refiner omits the
+            # target even though the original request names one.
             inferred.pop("category", None)
 
         for key, value in inferred.items():

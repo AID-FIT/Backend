@@ -471,11 +471,13 @@ def test_vague_request_uses_profile_taste_as_search_fallback() -> None:
         pipeline.run(
             query="옷 추천해줘",
             user_id="user_001",
-            user_profile={"preferred_styles": ["minimal"]},
+            user_profile={"preferred_styles": ["minimal"], "gender": "men"},
         )
     )
 
     assert rag.calls[0]["use_preference_search"] is True
+    assert rag.calls[0]["filters"]["gender"] == "men"
+    assert "preferred_styles" not in rag.calls[0]["filters"]
 
 
 def test_specific_request_keeps_profile_taste_out_of_search() -> None:

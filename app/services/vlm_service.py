@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.config import settings
+from app.core.gender import GENDER_SYNONYMS
 from app.schemas.ai import VLMResponse
 from app.services.gemini_client import extract_text, parse_json_object
 
@@ -39,25 +40,6 @@ SEASON_SYNONYMS = {
     "가을": "fall",
     "겨울": "winter",
     "사계절": "all-season",
-}
-
-GENDER_SYNONYMS = {
-    "male": "men",
-    "man": "men",
-    "men's": "men",
-    "mens": "men",
-    "남성": "men",
-    "남자": "men",
-    "female": "women",
-    "woman": "women",
-    "women's": "women",
-    "womens": "women",
-    "여성": "women",
-    "여자": "women",
-    "uni": "unisex",
-    "both": "unisex",
-    "공용": "unisex",
-    "남녀공용": "unisex",
 }
 
 _SHARED_RULES = (

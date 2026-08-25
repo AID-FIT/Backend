@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -56,6 +57,18 @@ class SocialIdentity(Base, TimestampMixin):
 
 class UserPreference(Base, TimestampMixin):
     __tablename__ = "user_preferences"
+    __table_args__ = (
+        # 성별은 카탈로그 필터로 그대로 쓰인다. 표기가 흔들리면 조건이 빗나가므로
+        # 정규형만 들어오도록 DB에서 막는다. 정규화는 schemas/user.py가 한다.
+        CheckConstraint(
+            "gender IS NULL OR gender IN ('men', 'women', 'unisex')",
+            name="ck_user_preferences_gender",
+        ),
+        CheckConstraint(
+            "height_cm IS NULL OR (height_cm BETWEEN 100 AND 250)",
+            name="ck_user_preferences_height_cm",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
@@ -63,6 +76,8 @@ class UserPreference(Base, TimestampMixin):
     preferred_colors: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     avoid_items: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     sizes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    height_cm: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="preferences")
 
@@ -197,6 +212,41 @@ class ChatMessage(Base, TimestampMixin):
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     conversation: Mapped[ChatConversation] = relationship(back_populates="messages")
+
+
+class ProductLike(Base, TimestampMixin):
+    """사용자가 좋아요를 누른 상품.
+
+    추천에 실리는 상품은 대부분 무신사 외부 id라 `products` 테이블에 없다.
+    그래서 FK 대신 외부 식별자(`product_ref`)를 그대로 들고, 그 시점의 상품
+    정보를 함께 저장한다. 목록 화면이 카탈로그를 다시 검색하지 않아도 되고,
+    나중에 그 상품이 카탈로그에서 빠져도 좋아요 기록은 남는다.
+    """
+
+    __tablename__ = "product_likes"
+    __table_args__ = (
+        # 같은 상품을 두 번 좋아요 할 수 없다. 중복은 DB가 막는다.
+        UniqueConstraint("user_id", "product_ref", name="uq_product_likes_user_product"),
+        CheckConstraint(
+            "source IN ('closet', 'musinsa')",
+            name="ck_product_likes_source",
+        ),
+        # 목록은 항상 "내 것을 최신순으로"라 두 열을 함께 훑는다.
+        Index("ix_product_likes_user_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    # 카탈로그 item_id가 우선이고, 없으면 product_url·image_url 순으로 떨어진다.
+    product_ref: Mapped[str] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(20))
+    # 좋아요를 누른 시점의 상품 정보.
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class FeedbackEvent(Base, TimestampMixin):

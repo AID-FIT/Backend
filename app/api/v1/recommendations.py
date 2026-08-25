@@ -187,6 +187,7 @@ async def _build_home_request(
     user_profile = to_agent_profile(preference)
     age_range = user_profile["age_group"]
     preferred_styles = user_profile["preferred_styles"]
+    gender = user_profile["gender"]
 
     selected_category = _allowed(category, _HOME_CATEGORIES)
     selected_mood = _allowed(mood, _HOME_MOODS)
@@ -217,6 +218,9 @@ async def _build_home_request(
         "preferred_style": preferred_styles,
         "closet_items": closet_payload,
     }
+    # unisex는 "가리지 않는다"는 뜻이므로 조건으로 걸지 않는다.
+    if gender and gender != "unisex":
+        context["gender"] = gender
     if selected_category:
         context["category"] = selected_category
     if selected_mood:
@@ -230,6 +234,7 @@ async def _build_home_request(
             "mood": selected_mood,
             "season": selected_season,
             "age_range": age_range,
+            "gender": gender,
             "preferred_styles": list(preferred_styles),
             "prompt": prompt.strip(),
         },
