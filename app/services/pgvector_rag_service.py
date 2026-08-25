@@ -22,13 +22,11 @@ CANDIDATE_MULTIPLIER = 4
 # 홈 피드는 한 번에 100건을 뽑는다. 상한이 그 두 배에 못 미치면 새로고침이
 # 회전할 자리가 없어 같은 상품이 돌기만 한다.
 MAX_CANDIDATES = 400
-# 훑는 폭(hnsw.ef_search) 기본값은 40이다. 그보다 큰 LIMIT을 걸면 인덱스가
-# 40개 언저리만 보고 온 결과를 그 개수인 척 돌려준다. 재현율이 낮다는 것은
-# 알고 있지만, `SET LOCAL hnsw.ef_search`로 넓히려던 시도는 되돌렸다 —
-# 배포하자 홈 추천이 통째로 실패했다. pgvector는 `hnsw` 접두사를 예약하므로
-# 확장 버전에 그 설정이 없으면 Postgres가 에러를 낸다. 트랜잭션 안에서 에러가
-# 나면 뒤따르는 SELECT까지 함께 죽는다. 다시 시도한다면 SAVEPOINT 안에서
-# 걸거나, 커넥션 단위로 한 번만 설정해야 한다.
+# HNSW가 그래프에서 훑는 폭. pgvector 기본값은 40이고, 그보다 큰 LIMIT을
+# 걸어도 인덱스는 40건 언저리만 돌려준다. 운영 DB에서 실측한 결과 LIMIT 400
+# 질의가 40건만 반환했고, 그 40건은 아우터·바지에 쏠려 가방과 원피스는 0건이었다.
+# 400으로 넓히면 같은 질의가 400건에 7종 전부를 담는다.
+MIN_EF_SEARCH = 40
 
 
 def candidate_limit_for(limit: int) -> int:
@@ -95,6 +93,7 @@ class PgVectorRagService:
         )
         params.update({"query_vector": str(vector), "candidate_limit": candidate_limit})
 
+        await self._widen_hnsw_search(db, candidate_limit)
         result = await db.execute(statement, params)
         excluded = excluded_item_refs or set()
         intents = infer_query_intents(query, effective_filters)
@@ -155,6 +154,20 @@ class PgVectorRagService:
                 best_by_url[product_url] = item
 
         return [*best_by_url.values(), *without_url]
+
+    async def _widen_hnsw_search(self, db: AsyncSession, candidate_limit: int) -> None:
+        """이번 질의에서 HNSW가 훑을 폭을 넓힌다.
+
+        `SET LOCAL`이라 이 트랜잭션에서만 유효하다. 세션 단위로 걸면 pgbouncer가
+        커넥션을 돌려쓸 때 다른 요청까지 따라 바뀐다.
+
+        pgvector 라이브러리가 아직 로드되지 않은 새 커넥션에서도 동작한다 —
+        Postgres가 점이 있는 이름을 placeholder로 받아 두기 때문이다.
+        (`SHOW`는 같은 시점에 UndefinedObject를 내지만 `SET`은 통과한다.)
+        운영 DB에 직접 붙어 확인했다.
+        """
+        ef_search = max(candidate_limit, MIN_EF_SEARCH)
+        await db.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
 
     def _rotate(self, candidates: list[dict], limit: int, refresh_seed: int) -> list[dict]:
         """새로고침할 때마다 후보 풀 안에서 시작점을 옮긴다.

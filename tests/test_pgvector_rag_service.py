@@ -299,3 +299,30 @@ def test_the_category_filter_still_reads_the_users_own_words() -> None:
     search(session, query="이 바지에 어울리는 상의 추천해줘")
 
     assert session.search_params["category"] == "상의"
+
+
+def test_hnsw_searches_at_least_as_wide_as_the_limit() -> None:
+    """pgvector의 hnsw.ef_search 기본값은 40이다.
+
+    그보다 큰 LIMIT을 걸어도 인덱스는 40건 언저리만 돌려준다. 운영 DB에서
+    실측했을 때 LIMIT 400 질의가 40건만 반환했고, 그 40건이 아우터·바지로
+    쏠려 가방과 원피스는 0건이었다. 넓히면 같은 질의가 7종을 모두 담는다.
+    """
+    import re
+
+    from app.services.pgvector_rag_service import candidate_limit_for
+
+    session = RecordingSession([row("musinsa_1")])
+    search(session, query="바지", limit=100)
+
+    widening = [s for s in session.statements if "ef_search" in s]
+    assert widening, "설정하지 않으면 기본값 40으로 돌아간다"
+    assert int(re.search(r"ef_search = (\d+)", widening[0]).group(1)) >= candidate_limit_for(100)
+
+
+def test_the_widening_does_not_leak_to_other_requests() -> None:
+    # 세션 단위로 걸면 pgbouncer가 커넥션을 돌려쓸 때 다른 요청까지 바뀐다.
+    session = RecordingSession([row("musinsa_1")])
+    search(session, query="바지")
+
+    assert all("SET LOCAL" in s for s in session.statements if "ef_search" in s)
