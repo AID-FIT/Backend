@@ -4,6 +4,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.services.catalog_matching import (
+    build_search_text,
+    final_score,
+    infer_query_intents,
+    metadata_score,
+)
 from app.services.embedding_service import EmbeddingService
 from app.services.target_category import infer_target_category
 
@@ -16,6 +22,10 @@ CANDIDATE_MULTIPLIER = 4
 # 홈 피드는 한 번에 100건을 뽑는다. 상한이 그 두 배에 못 미치면 새로고침이
 # 회전할 자리가 없어 같은 상품이 돌기만 한다.
 MAX_CANDIDATES = 400
+# HNSW가 그래프에서 훑는 폭. pgvector 기본값은 40이라, 그보다 많은 행을
+# LIMIT으로 요구하면 재현율이 무너진다 — 인덱스가 40개 언저리만 보고 온
+# 결과를 400개인 척 돌려준다. 뽑는 개수 이상으로 올려야 한다.
+MIN_EF_SEARCH = 40
 
 
 def candidate_limit_for(limit: int) -> int:
@@ -46,12 +56,26 @@ class PgVectorRagService:
         filters: dict[str, Any] | None = None,
         excluded_item_refs: set[str] | None = None,
         refresh_seed: int = 0,
+        vlm_items: list[dict] | None = None,
+        closet_items: list[dict] | None = None,
+        use_closet_style: bool = True,
+        preferred_styles: list[str] | None = None,
     ) -> list[dict]:
         if not query.strip():
             return []
 
-        vector = await self.embedding_service.embed_query(query)
-        conditions, params = self._build_conditions(self._effective_filters(query, filters or {}))
+        effective_filters = self._effective_filters(query, filters or {})
+        # 질의만 임베딩하면 옷장과 취향이 검색에 전혀 반영되지 않는다. 색·핏·무드는
+        # 다중값 문자열이라 필터로 만들기도 어려워, 질의 텍스트에 실어야 잡힌다.
+        search_text = build_search_text(
+            query,
+            vlm_items=vlm_items,
+            closet_items=closet_items,
+            use_closet_style=use_closet_style,
+            preferred_styles=preferred_styles,
+        )
+        vector = await self.embedding_service.embed_query(search_text)
+        conditions, params = self._build_conditions(effective_filters)
         candidate_limit = candidate_limit_for(limit)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -68,17 +92,81 @@ class PgVectorRagService:
         )
         params.update({"query_vector": str(vector), "candidate_limit": candidate_limit})
 
+        await self._widen_hnsw_search(db, candidate_limit)
         result = await db.execute(statement, params)
         excluded = excluded_item_refs or set()
+        intents = infer_query_intents(query, effective_filters)
 
         candidates: list[dict] = []
         for row in result.mappings():
             item = self._to_item(dict(row))
             if excluded.intersection({item["item_id"], item.get("product_url") or ""}):
                 continue
+            self._apply_scores(
+                item, intents, effective_filters, closet_items, use_closet_style, preferred_styles
+            )
             candidates.append(item)
 
+        # 벡터 순위와 최종 순위는 다르다. 유사도만으로 자르면 "검정"을 요청해도
+        # 색이 전혀 다른 상품이 위에 온다. 넉넉히 뽑아 두고 여기서 다시 세운다.
+        candidates = self._deduplicate(candidates)
+        candidates.sort(key=lambda item: item.get("final_score") or 0.0, reverse=True)
+
         return self._rotate(candidates, limit, refresh_seed)[:limit]
+
+    def _apply_scores(
+        self,
+        item: dict,
+        intents: dict[str, set[str]],
+        filters: dict[str, Any],
+        closet_items: list[dict] | None,
+        use_closet_style: bool,
+        preferred_styles: list[str] | None,
+    ) -> None:
+        meta = metadata_score(
+            item,
+            intents,
+            filters=filters,
+            closet_items=closet_items,
+            use_closet_style=use_closet_style,
+            preferred_styles=preferred_styles,
+        )
+        item["metadata_score"] = round(meta, 4)
+        item["final_score"] = round(final_score(item["similarity_score"], meta), 4)
+
+    def _deduplicate(self, items: list[dict]) -> list[dict]:
+        """같은 상품 페이지를 가리키는 행을 하나로 줄인다.
+
+        카탈로그에는 한 상품이 여러 행으로 들어 있다(고유 product_url 10,500개,
+        전체 12,794행). 그대로 두면 같은 상품이 피드에 두 번 오른다.
+        """
+        best_by_url: dict[str, dict] = {}
+        without_url: list[dict] = []
+
+        for item in items:
+            product_url = (item.get("product_url") or "").strip()
+            if not product_url:
+                without_url.append(item)
+                continue
+            existing = best_by_url.get(product_url)
+            if existing is None or (item.get("final_score") or 0.0) > (existing.get("final_score") or 0.0):
+                best_by_url[product_url] = item
+
+        return [*best_by_url.values(), *without_url]
+
+    async def _widen_hnsw_search(self, db: AsyncSession, candidate_limit: int) -> None:
+        """이번 질의에서 HNSW가 훑을 폭을 넓힌다.
+
+        pgvector의 `hnsw.ef_search` 기본값은 40이다. 그보다 큰 LIMIT을 걸면
+        인덱스는 40개 언저리만 탐색하고 멈추므로, 돌아오는 400건이 실제
+        상위 400건이 아니다. 그래프의 한쪽만 훑고 온 결과라 카테고리가
+        통째로 빠지기도 한다.
+
+        `SET LOCAL`이라 이 트랜잭션에서만 유효하다. 세션 단위로 걸면
+        pgbouncer가 커넥션을 돌려쓸 때 다른 요청까지 따라 바뀐다.
+        """
+        ef_search = max(candidate_limit, MIN_EF_SEARCH)
+        await db.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
 
     def _rotate(self, candidates: list[dict], limit: int, refresh_seed: int) -> list[dict]:
         """새로고침할 때마다 후보 풀 안에서 시작점을 옮긴다.
