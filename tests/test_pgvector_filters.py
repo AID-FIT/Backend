@@ -137,3 +137,24 @@ def test_rotation_wraps_around_instead_of_running_out() -> None:
 
 def test_rotation_survives_an_empty_candidate_list() -> None:
     assert PgVectorRagService()._rotate([], 5, 3) == []
+
+
+def test_a_home_sized_pool_still_rotates_into_fresh_products() -> None:
+    """홈처럼 크게 뽑는 요청도 새로고침에서 새 상품이 나와야 한다.
+
+    후보 상한이 뽑는 개수의 배수에 못 미치면 회전한 창이 겹쳐, 새로고침을
+    눌러도 이미 본 상품이 다시 올라온다.
+    """
+    from app.api.v1.recommendations import _HOME_CANDIDATE_POOL
+    from app.services.pgvector_rag_service import candidate_limit_for
+
+    pool = _HOME_CANDIDATE_POOL
+    candidates = [item(index) for index in range(candidate_limit_for(pool))]
+    service = PgVectorRagService()
+
+    def window(seed: int) -> set[str]:
+        rotated = service._rotate(candidates, pool, seed)[:pool]
+        return {candidate["item_id"] for candidate in rotated}
+
+    assert window(0).isdisjoint(window(1))
+    assert window(1).isdisjoint(window(2))

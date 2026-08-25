@@ -67,6 +67,34 @@ class StubRecommendationService:
         return generate()
 
 
+def ranked_leftovers(count: int = 60) -> list[dict]:
+    """LLM이 아직 쓰지 않은 랭킹 결과. 피드의 뒷칸을 채우는 재료다."""
+    return [
+        {
+            "item_id": f"ranked_{index}",
+            "source": "musinsa",
+            "item_name": f"상품 {index}",
+            "brand": "brand",
+            "category": ["상의", "바지", "아우터"][index % 3],
+            "image_url": f"https://img/{index}.jpg",
+            "product_url": f"https://shop/{index}",
+            "price": 10000,
+        }
+        for index in range(count)
+    ]
+
+
+class FillingRecommendationService(StubRecommendationService):
+    """큐레이션 두 칸과, 아직 쓰지 않은 랭킹 결과를 함께 흘린다."""
+
+    events = [
+        {
+            **RESULT_EVENT,
+            "ranked_items": ranked_leftovers(),
+        },
+    ]
+
+
 class ExplodingRecommendationService(StubRecommendationService):
     def stream(self, **kwargs):
         async def generate():
@@ -115,6 +143,23 @@ def response_headers(**overrides):
         return response
     finally:
         home_api.RecommendationService = original
+
+
+def test_stream_fills_the_feed_from_the_ranked_leftovers() -> None:
+    """스트리밍도 `/home`과 같은 크기의 피드를 보내야 한다.
+
+    한쪽만 채우면 브라우저(스트리밍)와 네이티브(폴백)가 서로 다른 개수를
+    받아, 카테고리 칩이 한쪽에서만 걸린다.
+    """
+    result = drain(FillingRecommendationService)[-1]
+
+    assert len(result["recommendations"]) == home_api._HOME_FEED_SIZE
+
+
+def test_stream_counts_the_filled_feed_not_just_the_curated_tiles() -> None:
+    result = drain(FillingRecommendationService)[-1]
+
+    assert result["applied_filters"]["result_count"] == home_api._HOME_FEED_SIZE
 
 
 def test_stream_sends_sse_events() -> None:

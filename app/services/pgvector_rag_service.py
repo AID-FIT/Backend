@@ -13,7 +13,19 @@ FALLBACK_IMAGE_URL = "https://image.msscdn.net/images/no_image_500.png"
 # 후보를 넉넉히 뽑아 두고 상위만 돌려준다. 메타데이터 가중치를 얹으면
 # 벡터 순위와 최종 순위가 달라지기 때문이다.
 CANDIDATE_MULTIPLIER = 4
-MAX_CANDIDATES = 200
+# 홈 피드는 한 번에 100건을 뽑는다. 상한이 그 두 배에 못 미치면 새로고침이
+# 회전할 자리가 없어 같은 상품이 돌기만 한다.
+MAX_CANDIDATES = 400
+
+
+def candidate_limit_for(limit: int) -> int:
+    """뽑을 개수보다 넉넉히 훑는다.
+
+    새로고침은 이 후보 안에서 시작점을 옮겨 새 상품을 보여준다(`_rotate`).
+    훑는 수가 뽑는 수의 배수가 아니면 회전한 창이 서로 겹쳐, 새로고침해도
+    본 상품이 다시 올라온다.
+    """
+    return min(max(limit * CANDIDATE_MULTIPLIER, limit), MAX_CANDIDATES)
 
 
 class PgVectorRagService:
@@ -40,7 +52,7 @@ class PgVectorRagService:
 
         vector = await self.embedding_service.embed_query(query)
         conditions, params = self._build_conditions(self._effective_filters(query, filters or {}))
-        candidate_limit = min(max(limit * CANDIDATE_MULTIPLIER, limit), MAX_CANDIDATES)
+        candidate_limit = candidate_limit_for(limit)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         statement = text(

@@ -169,17 +169,153 @@ def test_spreading_keeps_every_candidate() -> None:
 
 def test_home_asks_for_more_tiles_than_the_chat_default() -> None:
     # 홈은 타일을 채워야 하는 화면이라 채팅 기본값(5)보다 많이 요청한다.
-    from app.api.v1.recommendations import _HOME_TILE_COUNT
+    from app.api.v1.recommendations import _HOME_CURATED_COUNT
     from app.services.llm_service import MAX_RECOMMENDATIONS
 
-    assert _HOME_TILE_COUNT > MAX_RECOMMENDATIONS
+    assert _HOME_CURATED_COUNT > MAX_RECOMMENDATIONS
 
 
 def test_home_candidate_pool_leaves_room_to_choose() -> None:
-    # 후보가 목표 개수와 같으면 LLM이 고르는 게 아니라 그대로 옮겨 적게 된다.
-    from app.api.v1.recommendations import _HOME_CANDIDATE_POOL, _HOME_TILE_COUNT
+    # 후보가 피드 크기와 같으면 고르는 게 아니라 그대로 옮겨 적게 된다.
+    from app.api.v1.recommendations import _HOME_CANDIDATE_POOL, _HOME_FEED_SIZE
 
-    assert _HOME_CANDIDATE_POOL >= _HOME_TILE_COUNT * 2
+    assert _HOME_CANDIDATE_POOL >= _HOME_FEED_SIZE * 2
+
+
+def test_home_feed_leaves_every_category_something_to_show() -> None:
+    # 칩을 클라이언트에서 거르는 구조다. 카테고리마다 두 줄(4칸)은 남지 않으면
+    # 칩을 눌렀을 때 타일 한두 개짜리 화면이 나온다.
+    from app.api.v1.recommendations import _HOME_CATEGORIES, _HOME_FEED_SIZE
+
+    assert _HOME_FEED_SIZE >= len(_HOME_CATEGORIES) * 4
+
+
+def test_home_feed_size_fills_the_last_row() -> None:
+    # 프론트가 2열 그리드라 홀수면 마지막 줄이 반만 찬다.
+    from app.api.v1.recommendations import _HOME_FEED_SIZE
+
+    assert _HOME_FEED_SIZE % 2 == 0
+
+
+def curated(count: int) -> list[dict]:
+    return [
+        {
+            "item_id": f"curated_{index}",
+            "source": "musinsa",
+            "item_name": f"큐레이션 {index}",
+            "brand": "brand",
+            "category": "상의",
+            "image_url": f"https://img/curated_{index}.jpg",
+            "product_url": f"https://shop/curated_{index}",
+            "price": 10000,
+            "reason": "LLM이 쓴 이유",
+        }
+        for index in range(count)
+    ]
+
+
+def ranked(categories: list[str], per_category: int = 10, **overrides) -> list[dict]:
+    items = []
+    for category in categories:
+        for index in range(per_category):
+            item = {
+                "item_id": f"{category}_{index}",
+                "source": "musinsa",
+                "item_name": f"{category} {index}",
+                "brand": "brand",
+                "category": category,
+                "image_url": f"https://img/{category}_{index}.jpg",
+                "product_url": f"https://shop/{category}_{index}",
+                "price": 20000,
+            }
+            item.update(overrides)
+            items.append(item)
+    return items
+
+
+def fill(recommendations: list[dict], ranked_items: list[dict], status: str = "success") -> dict:
+    from app.api.v1.recommendations import _fill_home_feed
+
+    response = {
+        "status": status,
+        "message": "메시지",
+        "recommendations": recommendations,
+        "style_guide": {"summary": "요약", "tips": []},
+    }
+    return _fill_home_feed(response, ranked_items)
+
+
+def test_feed_fills_up_to_the_target_size() -> None:
+    # LLM은 8개만 쓴다. 나머지는 이미 뽑아 둔 검색 결과로 채워야 칩이 걸린다.
+    from app.api.v1.recommendations import _HOME_FEED_SIZE
+
+    result = fill(curated(8), ranked(["상의", "바지", "아우터", "신발"]))
+
+    assert len(result["recommendations"]) == _HOME_FEED_SIZE
+
+
+def test_feed_keeps_the_curated_tiles_in_front() -> None:
+    # 이유가 붙은 타일이 뒤로 밀리면 사용자는 AI가 고른 것을 보지 못한다.
+    result = fill(curated(8), ranked(["바지", "아우터"]))
+
+    assert [item["item_id"] for item in result["recommendations"][:8]] == [
+        f"curated_{index}" for index in range(8)
+    ]
+
+
+def test_filled_tiles_carry_no_invented_reason() -> None:
+    # 검색·랭킹이 그대로 실은 상품이다. 이유를 지어 붙이면 거짓말이 된다.
+    result = fill(curated(8), ranked(["바지", "아우터"]))
+
+    assert all(item["reason"] == "" for item in result["recommendations"][8:])
+    assert all(item["reason"] for item in result["recommendations"][:8])
+
+
+def test_feed_spreads_the_filled_tiles_across_categories() -> None:
+    # 점수순으로만 자르면 상위가 한 종류로 쏠려 다른 칩이 빈 화면을 낸다.
+    from collections import Counter
+
+    result = fill([], ranked(["상의", "바지", "아우터", "신발", "가방", "모자"]))
+    counts = Counter(item["category"] for item in result["recommendations"])
+
+    assert len(counts) == 6
+    assert max(counts.values()) - min(counts.values()) <= 1
+
+
+def test_feed_does_not_repeat_a_curated_tile() -> None:
+    # 랭킹 결과에는 LLM이 고른 상품도 그대로 들어 있다. 그냥 붙이면 중복된다.
+    curated_tiles = curated(3)
+    also_ranked = [
+        {**tile, "reason": None} for tile in curated_tiles
+    ] + ranked(["바지"], per_category=5)
+
+    result = fill(curated_tiles, also_ranked)
+    ids = [item["item_id"] for item in result["recommendations"]]
+
+    assert len(ids) == len(set(ids))
+
+
+def test_feed_drops_products_without_a_product_url() -> None:
+    # RecommendationItem이 무신사 상품에 product_url을 요구한다. 하나라도 비면
+    # 응답 전체가 검증에서 떨어져 홈이 통째로 실패한다.
+    result = fill([], ranked(["바지"], per_category=5, product_url=None))
+
+    assert result["recommendations"] == []
+
+
+def test_filled_feed_still_validates_as_a_response() -> None:
+    from app.schemas.recommendation import AgentResponse
+
+    result = fill(curated(8), ranked(["상의", "바지", "아우터"]))
+
+    assert len(AgentResponse.model_validate(result).recommendations) > 8
+
+
+def test_feed_leaves_a_failed_response_alone() -> None:
+    # 빈 응답에 검색 결과를 채우면 "못 찾았다"가 "찾았다"로 뒤집힌다.
+    result = fill([], ranked(["바지"]), status="empty")
+
+    assert result["recommendations"] == []
 
 
 def run_pipeline(**kwargs) -> dict:
@@ -236,6 +372,93 @@ def build_home(**overrides) -> dict:
     finally:
         home_api.UserService = original_user_service
         home_api.ClosetService = original_closet_service
+
+
+def call_home(**overrides) -> tuple[dict, dict]:
+    """`/home` 응답과 파이프라인이 받은 인자를 함께 돌려준다."""
+    import asyncio as _asyncio
+
+    from app.api.v1 import recommendations as home_api
+
+    class StubPreference:
+        styles = ["스트릿"]
+        sizes = {"age_range": "20대"}
+
+    class StubUserService:
+        async def get_preference(self, _db, _user):
+            return StubPreference()
+
+    class StubClosetService:
+        async def list_for_user(self, _db, _user):
+            return []
+
+        def to_agent_payload(self, item):
+            return item
+
+    class StubUser:
+        id = "user_001"
+
+    seen: dict = {}
+
+    class StubRecommendationService:
+        async def create(self, **kwargs):
+            seen.update(kwargs)
+            return {
+                "response": {
+                    "status": "success",
+                    "message": "추천이에요",
+                    "recommendations": curated(2),
+                    "style_guide": {"summary": "요약", "tips": []},
+                },
+                # 피드 크기보다 넉넉해야 "채우다 만" 결과와 구분된다.
+                "ranked_items": ranked(["상의", "바지", "아우터"], per_category=20),
+            }
+
+    originals = (
+        home_api.UserService,
+        home_api.ClosetService,
+        home_api.RecommendationService,
+    )
+    home_api.UserService = StubUserService
+    home_api.ClosetService = StubClosetService
+    home_api.RecommendationService = StubRecommendationService
+    try:
+        kwargs = {"prompt": "", "refresh_seed": 0, "category": "", "mood": "", "season": ""}
+        kwargs.update(overrides)
+        response = _asyncio.run(
+            home_api.get_home_recommendation(current_user=StubUser(), db=None, **kwargs)
+        )
+    finally:
+        (
+            home_api.UserService,
+            home_api.ClosetService,
+            home_api.RecommendationService,
+        ) = originals
+
+    return response.model_dump(), seen
+
+
+def test_home_fills_the_feed_from_the_ranked_leftovers() -> None:
+    # LLM은 앞쪽 몇 칸만 쓴다. 나머지를 안 채우면 칩이 거를 타일이 없다.
+    from app.api.v1.recommendations import _HOME_FEED_SIZE
+
+    result, _ = call_home()
+
+    assert len(result["recommendations"]) == _HOME_FEED_SIZE
+
+
+def test_home_asks_the_pipeline_for_the_leftovers() -> None:
+    # 트레이스를 요청하지 않으면 랭킹 결과가 없어 피드를 채울 재료가 없다.
+    _result, received = call_home()
+
+    assert received["return_trace"] is True
+
+
+def test_home_counts_the_filled_feed() -> None:
+    # 큐레이션 개수만 세면 화면에 보이는 타일 수와 어긋난다.
+    result, _ = call_home()
+
+    assert result["applied_filters"]["result_count"] == len(result["recommendations"])
 
 
 def test_category_chip_becomes_a_real_filter() -> None:

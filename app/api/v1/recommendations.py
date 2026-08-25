@@ -18,10 +18,16 @@ from app.services.user_service import UserService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# 홈 타일 목표 개수. 프론트가 2열 그리드라 짝수여야 마지막 줄이 비지 않는다.
-_HOME_TILE_COUNT = 8
-# 후보 풀은 목표 개수보다 넉넉해야 LLM이 고를 여지가 생긴다.
-_HOME_CANDIDATE_POOL = 30
+# LLM이 이유까지 써 주는 큐레이션 타일 수. 피드 맨 앞에 놓인다.
+_HOME_CURATED_COUNT = 8
+# 홈 피드가 싣는 전체 타일 수. 카테고리 칩을 클라이언트에서 거르는 구조라
+# 카테고리(7종)마다 두 줄 이상은 남아 있어야 칩이 빈 화면을 내지 않는다.
+# 프론트가 2열 그리드라 짝수여야 마지막 줄이 비지 않는다.
+_HOME_FEED_SIZE = 36
+# 후보 풀은 피드를 채우고도 남아야 한다. LLM 호출이 아니라 pgvector 검색이라
+# 늘려도 비용이 거의 들지 않는다. 새로고침이 겹치지 않은 상품을 보여주려면
+# 훑는 후보 수(candidate_limit_for)가 이 값의 배수여야 한다.
+_HOME_CANDIDATE_POOL = 100
 # 스타일 키워드가 하나도 없을 때 쓰는 기본 쿼리.
 _HOME_FALLBACK_QUERY = "오늘 입기 좋은 데일리 코디를 추천해줘."
 
@@ -190,8 +196,8 @@ async def _build_home_request(
 
     context: dict = {
         "refresh_seed": max(refresh_seed, 0),
-        # 홈은 타일 그리드라 8칸을 채워야 한다. 후보를 8개만 뽑으면 LLM이
-        # 그중 마음에 드는 것만 골라 1~2개로 줄어든다. 넉넉히 뽑아 고르게 한다.
+        # 후보를 뽑을 개수만큼만 뽑으면 LLM이 그중 마음에 드는 것만 골라
+        # 1~2개로 줄어든다. 피드를 채울 몫까지 넉넉히 뽑는다.
         "limit": _HOME_CANDIDATE_POOL,
         "age_range": age_range,
         "preferred_style": preferred_styles,
@@ -233,9 +239,78 @@ async def _build_home_request(
             # 된다. 타일이 같은 종류로만 차는 것을 막는다. 다만 "바지"처럼 종류를 찍어
             # 검색했다면 섞는 쪽이 오히려 틀린 답이므로 그때는 끈다.
             "diversify_by_category": target_category is None,
-            "max_recommendations": _HOME_TILE_COUNT,
+            "max_recommendations": _HOME_CURATED_COUNT,
         },
     }
+
+
+def _tile_ref(item: dict) -> str:
+    """같은 상품인지 가리는 키.
+
+    카탈로그 행에 item_id가 비어 오는 경우가 있어 이미지 주소도 함께 본다.
+    """
+    item_id = item.get("item_id")
+    if item_id is not None and str(item_id).strip():
+        return f"id:{item_id}"
+    return f"url:{item.get('image_url') or ''}"
+
+
+def _as_feed_tile(item: dict) -> dict | None:
+    """랭킹 결과를 홈 타일 한 칸으로 바꾼다. 타일이 될 수 없으면 None."""
+    image_url = item.get("image_url")
+    source = item.get("source", "musinsa")
+    product_url = item.get("product_url")
+    # RecommendationItem은 무신사 상품에 product_url을 요구한다. 하나라도
+    # 비어 있으면 응답 전체가 검증에서 떨어지므로 여기서 걸러 낸다.
+    if not image_url or (source == "musinsa" and not product_url):
+        return None
+    return {
+        "item_id": item.get("item_id"),
+        "source": source,
+        "item_name": item.get("item_name") or item.get("name"),
+        "brand": item.get("brand"),
+        "category": item.get("category"),
+        "image_url": image_url,
+        "product_url": product_url,
+        "price": item.get("price"),
+        # 이유는 LLM이 고른 앞쪽 타일에만 붙는다. 나머지는 검색·랭킹이 그대로
+        # 실은 것이라 지어낸 이유를 달지 않는다. 프론트는 빈 이유를 그리지 않는다.
+        "reason": "",
+    }
+
+
+def _fill_home_feed(response: dict, ranked_items: list[dict]) -> dict:
+    """LLM이 고른 타일 뒤에 랭킹 상위 상품을 카테고리 순환으로 붙인다.
+
+    칩을 클라이언트에서 거르는 구조라 카테고리마다 타일이 여러 칸 남아
+    있어야 한다. 그렇다고 LLM에 36개를 쓰게 하면 프롬프트도 생성도 네 배로
+    불어난다. 이유가 필요한 앞쪽만 LLM이 쓰고, 나머지는 이미 뽑아 둔 검색
+    결과를 그대로 싣는다. LLM 호출은 늘지 않는다.
+    """
+    recommendations = list(response.get("recommendations") or [])
+    if response.get("status") != "success" or len(recommendations) >= _HOME_FEED_SIZE:
+        return response
+
+    seen = {_tile_ref(item) for item in recommendations}
+    buckets: dict[str, list[dict]] = {}
+    for item in ranked_items:
+        tile = _as_feed_tile(item)
+        if tile is None or _tile_ref(tile) in seen:
+            continue
+        seen.add(_tile_ref(tile))
+        buckets.setdefault(tile.get("category") or "기타", []).append(tile)
+
+    # 카테고리를 번갈아 채운다. 점수순으로만 자르면 상위가 한 종류로 쏠려
+    # 다른 칩을 눌렀을 때 결과가 비어 버린다.
+    while buckets and len(recommendations) < _HOME_FEED_SIZE:
+        for category in list(buckets):
+            if len(recommendations) >= _HOME_FEED_SIZE:
+                break
+            recommendations.append(buckets[category].pop(0))
+            if not buckets[category]:
+                del buckets[category]
+
+    return {**response, "recommendations": recommendations}
 
 
 @router.get("/home", response_model=RecommendationResponse)
@@ -251,7 +326,9 @@ async def get_home_recommendation(
     request = await _build_home_request(
         db, current_user, prompt, refresh_seed, category, mood, season
     )
-    result = await RecommendationService().create(**request["run_kwargs"])
+    # 피드를 채우려면 LLM이 고르고 남은 랭킹 결과가 필요하다. 트레이스로 받는다.
+    trace = await RecommendationService().create(**request["run_kwargs"], return_trace=True)
+    result = _fill_home_feed(trace["response"], trace.get("ranked_items") or [])
     return RecommendationResponse(
         **result,
         applied_filters={
@@ -293,7 +370,9 @@ async def stream_home_recommendation(
                     yield _sse(event)
                     continue
 
-                response = event["response"]
+                response = _fill_home_feed(
+                    event["response"], event.get("ranked_items") or []
+                )
                 yield _sse(
                     {
                         "type": "result",
