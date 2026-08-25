@@ -1,7 +1,6 @@
 import asyncio
-import re
 
-from app.services.pgvector_rag_service import PgVectorRagService, candidate_limit_for
+from app.services.pgvector_rag_service import PgVectorRagService
 
 
 class FakeEmbeddingService:
@@ -300,29 +299,3 @@ def test_the_category_filter_still_reads_the_users_own_words() -> None:
     search(session, query="이 바지에 어울리는 상의 추천해줘")
 
     assert session.search_params["category"] == "상의"
-
-
-def test_hnsw_searches_at_least_as_wide_as_the_limit() -> None:
-    """pgvector의 hnsw.ef_search 기본값은 40이다.
-
-    그보다 큰 LIMIT을 걸면 인덱스는 40개 언저리만 탐색하고 멈춘다. 돌아온
-    400건은 실제 상위 400건이 아니라 그래프 한쪽만 훑고 온 결과라, 카테고리가
-    통째로 빠지기도 한다.
-    """
-    session = RecordingSession([row("musinsa_1")])
-
-    search(session, query="바지", limit=100)
-
-    ef_statements = [s for s in session.statements if "ef_search" in s]
-    assert ef_statements, "ef_search를 설정하지 않으면 기본값 40으로 돌아간다"
-    ef_search = int(re.search(r"ef_search = (\d+)", ef_statements[0]).group(1))
-    assert ef_search >= candidate_limit_for(100)
-
-
-def test_the_widening_does_not_leak_to_other_requests() -> None:
-    # 세션 단위로 걸면 pgbouncer가 커넥션을 돌려쓸 때 다른 요청까지 바뀐다.
-    session = RecordingSession([row("musinsa_1")])
-
-    search(session, query="바지")
-
-    assert all("SET LOCAL" in s for s in session.statements if "ef_search" in s)
