@@ -49,15 +49,15 @@ class StubRecommendationService:
     """진행 이벤트 두 개와 결과 하나를 흘린다."""
 
     events: list[dict] = [
-        {"type": "step", "node": "intent_classifier", "label": "무엇을 찾는지 파악했어요", "detail": None},
         {"type": "step", "node": "musinsa_rag", "label": "상품에서 골랐어요", "detail": "후보 30건"},
+        {"type": "step", "node": "style_ranker", "label": "취향에 맞게 순서를 매겼어요", "detail": "3가지 종류"},
         RESULT_EVENT,
     ]
 
     def __init__(self) -> None:
         self.received: dict = {}
 
-    def stream(self, **kwargs):
+    def stream_home(self, **kwargs):
         self.received.update(kwargs)
 
         async def generate():
@@ -96,9 +96,9 @@ class FillingRecommendationService(StubRecommendationService):
 
 
 class ExplodingRecommendationService(StubRecommendationService):
-    def stream(self, **kwargs):
+    def stream_home(self, **kwargs):
         async def generate():
-            yield {"type": "step", "node": "intent_classifier", "label": "시작했어요", "detail": None}
+            yield {"type": "step", "node": "musinsa_rag", "label": "상품을 찾고 있어요", "detail": None}
             raise RuntimeError("gemini is down")
 
         return generate()
@@ -168,6 +168,14 @@ def test_stream_sends_sse_events() -> None:
     assert [event["type"] for event in events] == ["step", "step", "result"]
 
 
+def test_stream_does_not_report_removed_agent_steps() -> None:
+    nodes = {event.get("node") for event in drain() if event["type"] == "step"}
+
+    assert nodes.isdisjoint(
+        {"intent_classifier", "query_refiner", "retrieval_planner", "vlm"}
+    )
+
+
 def test_stream_declares_the_event_stream_media_type() -> None:
     # 이 헤더가 없으면 브라우저가 응답을 스트림으로 다루지 않는다.
     assert response_headers().media_type == "text/event-stream"
@@ -219,4 +227,4 @@ def test_failure_message_does_not_leak_internals() -> None:
 
 def test_korean_survives_the_json_encoding() -> None:
     # ensure_ascii를 켜 두면 화면에 \uxxxx가 뜬다.
-    assert "무엇을" in drain()[0]["label"]
+    assert "상품" in drain()[0]["label"]

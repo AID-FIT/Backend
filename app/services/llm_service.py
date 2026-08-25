@@ -22,6 +22,16 @@ MAX_RECOMMENDATIONS = 5
 MAX_PREVIOUS_RAG_CANDIDATES = 20
 
 
+def empty_recommendation_response() -> dict[str, Any]:
+    """Return the shared public response used when retrieval found no candidates."""
+    return {
+        "status": "empty",
+        "message": "조건에 맞는 추천 상품을 찾지 못했습니다.",
+        "recommendations": [],
+        "style_guide": None,
+    }
+
+
 class LlmService:
     async def classify_intent(
         self,
@@ -367,12 +377,7 @@ class LlmService:
         }
 
     def _empty_response(self) -> dict:
-        return {
-            "status": "empty",
-            "message": "조건에 맞는 추천 상품을 찾지 못했습니다.",
-            "recommendations": [],
-            "style_guide": None,
-        }
+        return empty_recommendation_response()
 
     def _build_gemini_payload(
         self,

@@ -70,6 +70,112 @@ def route_after_fallback(state: AgentState) -> str:
     return "style_ranker" if state.get("has_rag_result") else "final_response"
 
 
+def build_initial_state(
+    query: str,
+    user_id: str,
+    image_urls: list[str] | None = None,
+    closet_items: list[dict] | None = None,
+    use_closet_style: bool = True,
+    user_profile: dict | None = None,
+    context: dict | None = None,
+    recommendation_target: str = "musinsa",
+    lock_retrieval_target: bool = False,
+    diversify_by_category: bool = False,
+    max_recommendations: int | None = None,
+    image_url: str | None = None,
+    closet_item_id: str | None = None,
+    chat_history: list[ChatHistoryMessage] | None = None,
+    previous_rag_results: list[dict] | None = None,
+    previous_shown_item_refs: list[str] | None = None,
+    previous_rag_query: str | None = None,
+    previous_retrieval_target: str | None = None,
+) -> AgentState:
+    """Build the state shared by the Agent graph and deterministic workflows."""
+    # Keep old single-image callers compatible with the new multi-image path.
+    normalized_image_urls = image_urls or ([image_url] if image_url else [])
+    state: AgentState = {
+        "user_id": user_id,
+        "query": query,
+        "image_url": image_url or (normalized_image_urls[0] if normalized_image_urls else None),
+        "image_urls": normalized_image_urls,
+        "closet_items": closet_items or [],
+        "use_closet_style": use_closet_style,
+        "user_profile": user_profile or {},
+        "closet_item_id": closet_item_id,
+        "recommendation_target": recommendation_target,
+        "lock_retrieval_target": lock_retrieval_target,
+        "diversify_by_category": diversify_by_category,
+        "max_recommendations": max_recommendations,
+        "context": context or {},
+        "chat_history": chat_history or [],
+        "previous_rag_results": previous_rag_results or [],
+        "previous_shown_item_refs": previous_shown_item_refs or [],
+        "previous_rag_query": previous_rag_query,
+        "previous_retrieval_target": previous_retrieval_target,
+        "resolved_query": query,
+        "vlm_items": [],
+        "rag_results": [],
+        "candidate_pool": previous_rag_results or [],
+        "ranked_items": [],
+        "selected_rag_item_refs": [],
+        "candidate_scope": "all",
+        "rag_reused": False,
+        "fallback_count": 0,
+        "error": None,
+    }
+    return state
+
+
+def build_trace_result(
+    result: AgentState,
+    query: str,
+    recommendation_target: str = "musinsa",
+    previous_shown_item_refs: list[str] | None = None,
+) -> dict:
+    """Build the trace contract shared by graph and deterministic executions."""
+    response = result["final_response"]
+    current_shown_item_refs = _recommendation_item_refs(response)
+    # An unseen-only request can fall through from an exhausted reuse
+    # cache to fresh RAG while retrieval_action still says "reuse".
+    # The scope, rather than the original action, determines whether
+    # previously shown refs must stay excluded on following turns.
+    preserve_shown_history = bool(result.get("rag_reused")) or (
+        result.get("candidate_scope") == "unseen"
+    )
+    shown_item_refs = list(
+        dict.fromkeys(
+            [
+                *((previous_shown_item_refs or []) if preserve_shown_history else []),
+                *current_shown_item_refs,
+            ]
+        )
+    )
+    candidate_pool = (
+        result.get("candidate_pool", [])
+        if result.get("intent") == "fashion_service"
+        else []
+    )
+    return {
+        "response": response,
+        "vlm_items": result.get("vlm_items", []),
+        "ranked_items": result.get("ranked_items", []),
+        "rag_items": result.get("rag_results", []),
+        "candidate_pool": candidate_pool,
+        "shown_item_refs": shown_item_refs,
+        "retrieval_target": result.get("retrieval_target", recommendation_target),
+        "intent": result.get("intent"),
+        "intent_reason": result.get("intent_reason"),
+        "resolved_query": result.get("resolved_query", query),
+        "rag_query": result.get("rag_query"),
+        "retrieval_action": result.get("retrieval_action"),
+        "candidate_scope": result.get("candidate_scope", "all"),
+        "retrieval_reason": result.get("retrieval_reason"),
+        "rag_reused": result.get("rag_reused", False),
+        "selected_rag_item_refs": result.get("selected_rag_item_refs", []),
+        "error": result.get("error"),
+    }
+
+
 class AidFitAgentPipeline:
     def __init__(self, nodes: AgentNodes | None = None) -> None:
         self.nodes = nodes or AgentNodes()
@@ -181,39 +287,26 @@ class AidFitAgentPipeline:
         previous_rag_query: str | None = None,
         previous_retrieval_target: str | None = None,
     ) -> AgentState:
-        # Keep old single-image callers compatible with the new multi-image path.
-        normalized_image_urls = image_urls or ([image_url] if image_url else [])
-        state: AgentState = {
-            "user_id": user_id,
-            "query": query,
-            "image_url": image_url or (normalized_image_urls[0] if normalized_image_urls else None),
-            "image_urls": normalized_image_urls,
-            "closet_items": closet_items or [],
-            "use_closet_style": use_closet_style,
-            "user_profile": user_profile or {},
-            "closet_item_id": closet_item_id,
-            "recommendation_target": recommendation_target,
-            "lock_retrieval_target": lock_retrieval_target,
-            "diversify_by_category": diversify_by_category,
-            "max_recommendations": max_recommendations,
-            "context": context or {},
-            "chat_history": chat_history or [],
-            "previous_rag_results": previous_rag_results or [],
-            "previous_shown_item_refs": previous_shown_item_refs or [],
-            "previous_rag_query": previous_rag_query,
-            "previous_retrieval_target": previous_retrieval_target,
-            "resolved_query": query,
-            "vlm_items": [],
-            "rag_results": [],
-            "candidate_pool": previous_rag_results or [],
-            "ranked_items": [],
-            "selected_rag_item_refs": [],
-            "candidate_scope": "all",
-            "rag_reused": False,
-            "fallback_count": 0,
-            "error": None,
-        }
-        return state
+        return build_initial_state(
+            query=query,
+            user_id=user_id,
+            image_urls=image_urls,
+            closet_items=closet_items,
+            use_closet_style=use_closet_style,
+            user_profile=user_profile,
+            context=context,
+            recommendation_target=recommendation_target,
+            lock_retrieval_target=lock_retrieval_target,
+            diversify_by_category=diversify_by_category,
+            max_recommendations=max_recommendations,
+            image_url=image_url,
+            closet_item_id=closet_item_id,
+            chat_history=chat_history,
+            previous_rag_results=previous_rag_results,
+            previous_shown_item_refs=previous_shown_item_refs,
+            previous_rag_query=previous_rag_query,
+            previous_retrieval_target=previous_retrieval_target,
+        )
 
     def _build_trace_result(
         self,
@@ -222,47 +315,12 @@ class AidFitAgentPipeline:
         recommendation_target: str = "musinsa",
         previous_shown_item_refs: list[str] | None = None,
     ) -> dict:
-        response = result["final_response"]
-        current_shown_item_refs = _recommendation_item_refs(response)
-        # An unseen-only request can fall through from an exhausted reuse
-        # cache to fresh RAG while retrieval_action still says "reuse".
-        # The scope, rather than the original action, determines whether
-        # previously shown refs must stay excluded on following turns.
-        preserve_shown_history = bool(result.get("rag_reused")) or (
-            result.get("candidate_scope") == "unseen"
+        return build_trace_result(
+            result,
+            query=query,
+            recommendation_target=recommendation_target,
+            previous_shown_item_refs=previous_shown_item_refs,
         )
-        shown_item_refs = list(
-            dict.fromkeys(
-                [
-                    *((previous_shown_item_refs or []) if preserve_shown_history else []),
-                    *current_shown_item_refs,
-                ]
-            )
-        )
-        candidate_pool = (
-            result.get("candidate_pool", [])
-            if result.get("intent") == "fashion_service"
-            else []
-        )
-        return {
-            "response": response,
-            "vlm_items": result.get("vlm_items", []),
-            "ranked_items": result.get("ranked_items", []),
-            "rag_items": result.get("rag_results", []),
-            "candidate_pool": candidate_pool,
-            "shown_item_refs": shown_item_refs,
-            "retrieval_target": result.get("retrieval_target", recommendation_target),
-            "intent": result.get("intent"),
-            "intent_reason": result.get("intent_reason"),
-            "resolved_query": result.get("resolved_query", query),
-            "rag_query": result.get("rag_query"),
-            "retrieval_action": result.get("retrieval_action"),
-            "candidate_scope": result.get("candidate_scope", "all"),
-            "retrieval_reason": result.get("retrieval_reason"),
-            "rag_reused": result.get("rag_reused", False),
-            "selected_rag_item_refs": result.get("selected_rag_item_refs", []),
-            "error": result.get("error"),
-        }
 
     async def run(self, return_trace: bool = False, **kwargs) -> dict:
         state = self._build_initial_state(**kwargs)
