@@ -328,6 +328,10 @@ Response:
   "id": "user_demo",
   "email": "demo@aid-fit.local",
   "nickname": "AID-FIT 사용자",
+  "role": "user",
+  "age_range": "20대",
+  "gender": "men",
+  "height_cm": 178,
   "styles": ["캐주얼", "미니멀"],
   "preferred_colors": [],
   "avoid_items": [],
@@ -343,6 +347,9 @@ Request:
 
 ```json
 {
+  "age_range": "20대",
+  "gender": "남성",
+  "height_cm": 178,
   "styles": ["캐주얼", "스트릿"],
   "preferred_colors": ["화이트", "네이비"],
   "avoid_items": ["스키니진"],
@@ -353,7 +360,40 @@ Request:
 }
 ```
 
-Response: `GET /users/me`와 동일한 구조.
+`gender`는 `남성 / 여성 / male / women's / 공용` 등을 받아 카탈로그가 쓰는 `men | women | unisex`로 정규화해 저장합니다. 알 수 없는 값은 422입니다. `height_cm`은 100~250 사이의 정수입니다.
+
+`styles`, `preferred_colors`, `avoid_items`, `sizes`는 **전체 교체**입니다. 반면 `gender`와 `height_cm`은 **본문에 담긴 경우에만** 반영되므로, 두 필드를 모르는 클라이언트가 프로필을 저장해도 값이 지워지지 않습니다.
+
+Response: `GET /users/me`와 동일한 구조. `gender`는 정규화된 값(`men`)으로 돌아옵니다.
+
+### Chats
+
+추천 탭의 대화입니다. 모든 경로가 액세스 토큰의 사용자로 범위를 좁히며, 남의 대화는 존재 여부를 알리지 않고 404로 답합니다.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/chats` | 대화 생성 (201) |
+| `GET` | `/chats` | 대화 목록 |
+| `GET` | `/chats/{conversation_id}/messages` | 메시지 페이지 (`limit`, `cursor`) |
+| `POST` | `/chats/{conversation_id}/messages` | 질문 전송 |
+| `DELETE` | `/chats/{conversation_id}` | 대화 1건 삭제 (204) |
+| `DELETE` | `/chats` | 전체 대화 삭제 (204, 멱등) |
+
+#### `POST /chats/{conversation_id}/messages`
+
+Request:
+
+```json
+{
+  "query": "이 재킷에 어울리는 바지 추천해줘",
+  "image_urls": [],
+  "closet_item_ids": ["closet_001", "closet_002"]
+}
+```
+
+`closet_item_ids`를 비우면 지금까지처럼 옷장 **전체**를 참고합니다. 채우면 그 옷만 이번 질문의 범위가 됩니다(최대 8개). 자기 옷장에 없는 id는 404 `Some closet items were not found`입니다.
+
+`role`과 `user_id`는 서버가 정하며 요청 본문에 담을 수 없습니다(422).
 
 ### Images
 
@@ -513,7 +553,9 @@ Response:
 | --- | --- |
 | `users` | 사용자 계정 |
 | `social_identities` | Google/Apple provider와 provider `sub` 매핑 |
-| `user_preferences` | 선호 스타일, 색상, 회피 아이템, 사이즈 |
+| `user_preferences` | 선호 스타일, 색상, 회피 아이템, 사이즈, 성별(`men\|women\|unisex`), 키(cm) |
+| `chat_conversations` | 추천 탭 대화. 삭제 시 메시지도 함께 지웁니다 |
+| `chat_messages` | 대화 메시지. `payload`에 첨부 이미지와 옷장 선택 스냅샷이 담깁니다 |
 | `images` | 업로드 이미지 메타데이터 |
 | `products` | 의류 상품 원본 메타데이터 |
 | `product_embeddings` | RAG 검색용 임베딩 메타데이터 |

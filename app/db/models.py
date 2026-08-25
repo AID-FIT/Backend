@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -56,6 +57,18 @@ class SocialIdentity(Base, TimestampMixin):
 
 class UserPreference(Base, TimestampMixin):
     __tablename__ = "user_preferences"
+    __table_args__ = (
+        # 성별은 카탈로그 필터로 그대로 쓰인다. 표기가 흔들리면 조건이 빗나가므로
+        # 정규형만 들어오도록 DB에서 막는다. 정규화는 schemas/user.py가 한다.
+        CheckConstraint(
+            "gender IS NULL OR gender IN ('men', 'women', 'unisex')",
+            name="ck_user_preferences_gender",
+        ),
+        CheckConstraint(
+            "height_cm IS NULL OR (height_cm BETWEEN 100 AND 250)",
+            name="ck_user_preferences_height_cm",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
@@ -63,6 +76,8 @@ class UserPreference(Base, TimestampMixin):
     preferred_colors: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     avoid_items: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     sizes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    height_cm: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="preferences")
 

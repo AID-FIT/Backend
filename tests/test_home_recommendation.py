@@ -346,6 +346,8 @@ def build_home(**overrides) -> dict:
     class StubPreference:
         styles = ["스트릿", "캐주얼"]
         sizes = {"age_range": "20대"}
+        gender = "men"
+        height_cm = 178
 
     class StubUserService:
         async def get_preference(self, _db, _user):
@@ -383,6 +385,8 @@ def call_home(**overrides) -> tuple[dict, dict]:
     class StubPreference:
         styles = ["스트릿"]
         sizes = {"age_range": "20대"}
+        gender = "men"
+        height_cm = 178
 
     class StubUserService:
         async def get_preference(self, _db, _user):

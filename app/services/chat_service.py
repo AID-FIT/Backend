@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.models import ChatConversation, ChatMessage
+from app.db.models import ChatConversation, ChatMessage, ClosetItem
 from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
 from app.services.user_service import UserService, to_agent_profile
@@ -19,6 +19,24 @@ TITLE_FROM_QUERY_LENGTH = 40
 
 class ChatNotFoundError(Exception):
     """대화가 없거나 요청한 사용자의 것이 아니다."""
+
+
+class ClosetItemNotFoundError(Exception):
+    """고른 옷장 아이템이 없거나 요청한 사용자의 것이 아니다."""
+
+
+# 아무것도 고르지 않은 턴(옷장 전체)을 가리키는 값. 선택 기능이 생기기 전에
+# 쌓인 대화도 모두 이 상태였으므로, 키가 없는 옛 컨텍스트는 이것으로 읽는다.
+CLOSET_SCOPE_ALL = "all"
+
+
+def closet_scope_key(requested_ids: list[str]) -> str:
+    """이번 턴의 옷장 범위를 한 문자열로 만든다.
+
+    직전 턴의 후보 풀을 재사용할지 판단할 때, 범위가 그대로인지 비교하는 데 쓴다.
+    순서가 달라도 같은 범위이므로 정렬해서 만든다.
+    """
+    return ",".join(sorted(requested_ids)) if requested_ids else CLOSET_SCOPE_ALL
 
 
 class ChatService:
@@ -110,16 +128,20 @@ class ChatService:
         conversation_id: str,
         query: str,
         image_urls: list[str] | None = None,
+        closet_item_ids: list[str] | None = None,
     ) -> dict:
         conversation = await self.get_owned_conversation(db, conversation_id, user_id)
         if conversation is None:
             raise ChatNotFoundError
 
         normalized_image_urls = image_urls or []
+        selected_items, requested_ids = await self._resolve_closet_scope(
+            db, user_id, closet_item_ids
+        )
+        scope_key = closet_scope_key(requested_ids)
         history = await self._load_recent_messages(db, conversation_id, DEFAULT_HISTORY_LIMIT)
-        previous_context = self._extract_previous_agent_context(history)
-        closet_items = await self.closet_service.list_for_user_id(db, user_id)
-        closet_payload = [self.closet_service.to_agent_payload(item) for item in closet_items]
+        previous_context = self._extract_previous_agent_context(history, scope_key)
+        closet_payload = [self.closet_service.to_agent_payload(item) for item in selected_items]
         preference = await self.user_service.get_preference_for_user_id(db, user_id)
         user_profile = to_agent_profile(preference)
 
@@ -127,7 +149,23 @@ class ChatService:
             conversation_id=conversation_id,
             role="user",
             content=query,
-            payload={"image_urls": normalized_image_urls},
+            payload={
+                "image_urls": normalized_image_urls,
+                # 고른 경우에만 남긴다. 매 턴 옷장 전체를 메시지에 박으면 히스토리가 부푼다.
+                # id만 두면 나중에 그 옷을 지웠을 때 히스토리가 깨진 참조를 그리므로,
+                # 다시 그릴 만큼의 얇은 스냅샷을 함께 저장한다.
+                "closet_items": [
+                    {
+                        "closet_item_id": item.id,
+                        "name": item.name,
+                        "image_url": item.image_url,
+                        "category": item.category,
+                    }
+                    for item in selected_items
+                ]
+                if requested_ids
+                else [],
+            },
         )
         db.add(user_message)
         if conversation.title is None:
@@ -153,7 +191,7 @@ class ChatService:
         trace = agent_result if isinstance(agent_result.get("response"), dict) else {"response": agent_result}
         agent_response = trace["response"]
         assistant_payload = dict(agent_response)
-        agent_context = self._build_agent_context(trace, previous_context)
+        agent_context = self._build_agent_context(trace, previous_context, scope_key)
         if agent_context["candidate_pool"] and trace.get("retrieval_action") in {"reuse", "retrieve"}:
             # Persist full candidates for the next-turn reuse decision. The public
             # response serializer removes this private key from message payloads.
@@ -176,6 +214,80 @@ class ChatService:
             "response": agent_response,
         }
 
+    async def _resolve_closet_scope(
+        self,
+        db: AsyncSession,
+        user_id: str,
+        closet_item_ids: list[str] | None,
+    ) -> tuple[list[ClosetItem], list[str]]:
+        """이번 턴이 참고할 옷장 아이템과, 사용자가 실제로 고른 id를 돌려준다.
+
+        아무것도 고르지 않았으면 지금까지처럼 옷장 전체를 본다. 골랐다면 그 옷만
+        범위가 된다. 소유권은 따로 검사하지 않는다 — 목록 자체가 이미 user_id로
+        걸러져 있어서, 남의 아이템 id는 그냥 "없는 id"가 된다. 존재 여부를
+        403으로 알려주지 않기 위해서이기도 하다.
+        """
+        requested_ids = list(dict.fromkeys(closet_item_ids or []))
+        closet_items = await self.closet_service.list_for_user_id(db, user_id)
+        if not requested_ids:
+            return closet_items, []
+
+        items_by_id = {item.id: item for item in closet_items}
+        if any(item_id not in items_by_id for item_id in requested_ids):
+            raise ClosetItemNotFoundError
+        return [items_by_id[item_id] for item_id in requested_ids], requested_ids
+
+    async def delete_conversation(
+        self, db: AsyncSession, conversation_id: str, user_id: str
+    ) -> None:
+        """대화와 그 메시지를 함께 지운다.
+
+        ORM의 `db.delete(conversation)`은 쓰지 않는다. delete-orphan cascade를
+        적용하려고 `conversation.messages`를 지연 로딩하는데, AsyncSession에서는
+        그 순간 MissingGreenlet으로 터진다. Core delete 두 문장이면 FK에
+        ON DELETE CASCADE가 실제로 걸려 있는지와 무관하게 결과가 같다.
+        """
+        if await self.get_owned_conversation(db, conversation_id, user_id) is None:
+            raise ChatNotFoundError
+
+        await db.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
+        result = await db.execute(
+            delete(ChatConversation).where(
+                ChatConversation.id == conversation_id,
+                ChatConversation.user_id == user_id,
+            )
+        )
+        if result.rowcount == 0:
+            # 소유권 확인과 삭제 사이에 다른 요청이 먼저 지웠다. 메시지 삭제까지
+            # 되돌려야 다른 사람의 대화를 건드린 흔적이 남지 않는다.
+            await db.rollback()
+            raise ChatNotFoundError
+
+        await db.commit()
+
+    async def delete_all_conversations(self, db: AsyncSession, user_id: str) -> int:
+        """그 사용자의 대화를 모두 지우고 지운 수를 돌려준다. 없으면 0."""
+        conversation_ids = list(
+            (
+                await db.execute(
+                    select(ChatConversation.id).where(ChatConversation.user_id == user_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not conversation_ids:
+            return 0
+
+        await db.execute(
+            delete(ChatMessage).where(ChatMessage.conversation_id.in_(conversation_ids))
+        )
+        result = await db.execute(
+            delete(ChatConversation).where(ChatConversation.user_id == user_id)
+        )
+        await db.commit()
+        return result.rowcount or 0
+
     async def _load_recent_messages(
         self, db: AsyncSession, conversation_id: str, limit: int
     ) -> list[ChatMessage]:
@@ -192,8 +304,15 @@ class ChatService:
         # payload는 모델에 넣지 않는다. 상품 목록 전체를 다시 보내면 토큰만 커진다.
         return [{"role": message.role, "content": message.content} for message in messages]
 
-    def _extract_previous_agent_context(self, messages: list[ChatMessage]) -> dict:
-        """Find the latest reusable recommendation context in recent messages."""
+    def _extract_previous_agent_context(
+        self, messages: list[ChatMessage], scope_key: str = CLOSET_SCOPE_ALL
+    ) -> dict:
+        """Find the latest reusable recommendation context in recent messages.
+
+        후보 풀은 그때의 옷장 범위로 만들어진 것이다. 사용자가 이번 턴에 참고할
+        옷을 바꿨다면 그 풀은 더 이상 이 질문의 후보가 아니므로, 재사용하지 않고
+        빈 컨텍스트를 돌려 재검색시킨다.
+        """
         for index in range(len(messages) - 1, -1, -1):
             message = messages[index]
             if message.role != "assistant" or not isinstance(message.payload, dict):
@@ -205,6 +324,10 @@ class ChatService:
                 if not isinstance(candidate_pool, list):
                     candidate_pool = context.get("rag_items")
                 if isinstance(candidate_pool, list) and candidate_pool:
+                    # 키가 없는 컨텍스트는 선택 기능 이전에 쌓인 것이고, 그때는
+                    # 모두 옷장 전체였다.
+                    if context.get("closet_scope_key", CLOSET_SCOPE_ALL) != scope_key:
+                        return self._empty_agent_context()
                     if not self._context_is_fresh(context, message):
                         return self._empty_agent_context()
                     normalized_pool = [item for item in candidate_pool if isinstance(item, dict)]
@@ -234,6 +357,9 @@ class ChatService:
             legacy_items = self._recommendations_to_rag_items(recommendations)
             if not legacy_items:
                 continue
+            # 이 카드들은 선택 기능이 없던 시절에 옷장 전체로 만들어졌다.
+            if scope_key != CLOSET_SCOPE_ALL:
+                return self._empty_agent_context()
             if not self._context_is_fresh({}, message):
                 return self._empty_agent_context()
             previous_query = next(
@@ -289,7 +415,12 @@ class ChatService:
             )
         return items
 
-    def _build_agent_context(self, trace: dict, previous_context: dict | None = None) -> dict:
+    def _build_agent_context(
+        self,
+        trace: dict,
+        previous_context: dict | None = None,
+        scope_key: str = CLOSET_SCOPE_ALL,
+    ) -> dict:
         previous = previous_context or self._empty_agent_context()
         candidate_pool = trace.get("candidate_pool") or trace.get("rag_items") or []
         rag_reused = bool(trace.get("rag_reused"))
@@ -301,7 +432,8 @@ class ChatService:
                 *current_refs,
             ]
         return {
-            "schema_version": 2,
+            "schema_version": 3,
+            "closet_scope_key": scope_key,
             "candidate_pool": candidate_pool,
             # Keep the old key while existing conversations and older servers coexist.
             "rag_items": candidate_pool,
