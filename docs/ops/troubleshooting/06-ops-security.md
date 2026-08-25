@@ -186,6 +186,136 @@ FK 때문에 **삭제 순서가 있다.** 자식부터 지운다.
 
 ---
 
+## 7. `POST /auth/login`이 비밀번호를 검증하지 않았다
+
+### 증상
+
+없다. 그게 문제다. 아무도 호출하지 않아 조용히 열려 있었다.
+
+### 원인
+
+```python
+@router.post("/login", response_model=TokenResponse)
+async def login(payload: LoginRequest) -> TokenResponse:
+    # MVP 단계에서는 계정 저장소 연결 전까지 입력 이메일을 subject로 JWT만 발급한다.
+    return TokenResponse(access_token=create_access_token(payload.email))
+```
+
+`LoginRequest`는 `password` 필드를 받는데 **어디서도 검증하지 않는다.**
+아무 이메일이나 보내면 그 이메일의 토큰이 나온다. 주석에 "MVP 단계"라고 적혀 있지만
+라우터에 등록돼 실제로 열려 있는 엔드포인트였다.
+
+그리고 그 토큰은 **쓸 수도 없었다.** `create_access_token(payload.email)`은 `sub`에
+이메일을 넣는데 `deps.get_current_user`는 그 값으로 `User.id`를 조회한다.
+
+```python
+select(User).where(User.id == str(user_id))   # user_id = "a@b.com"
+```
+
+`User.id`는 UUID 컬럼이라 asyncpg가 `invalid input syntax for type uuid`를 던진다.
+**401이 아니라 500이다.** 정상 경로인 소셜 로그인은 `user.id`를 넣으므로 문제없다.
+
+### 해결 — 구현이 아니라 제거
+
+비밀번호를 검증하도록 고치는 선택지는 택하지 않았다. **저장소가 없다.**
+
+- `password_hash`는 소셜 로그인에서 `None`으로만 저장된다
+- 해시 라이브러리가 의존성에 없다
+- 프론트엔드는 이 엔드포인트를 호출하지 않는다
+
+없는 기능을 새로 만드는 대신 열린 문을 닫았다. `LoginRequest` 스키마도 함께 지웠다 —
+남겨 두면 다음 사람이 되살리기 쉽다. 로그인 경로는 `/auth/google`, `/auth/apple` 둘뿐이다.
+
+> "MVP라서 나중에"라고 적은 주석은 **지금 열려 있다는 사실을 바꾸지 못한다.**
+> 임시 구현을 남길 거면 라우터에서 빼거나 환경으로 막는다.
+
+---
+
+## 8. 클라이언트가 준 URL을 서버가 그대로 가져왔다 (SSRF)
+
+### 증상
+
+없다. 이것도 조용한 종류다.
+
+### 원인
+
+VLM이 이미지를 분석하려면 바이트를 인라인해야 해서 서버가 직접 받아 온다.
+그런데 스킴만 확인하고 있었다.
+
+```python
+scheme = urlparse(image_url).scheme.lower()
+if scheme not in ALLOWED_IMAGE_SCHEMES:   # http/https만 확인
+    raise ValueError(...)
+response = await client.get(image_url)     # 그대로 요청
+```
+
+이 `image_url`은 `MessageSendRequest.image_urls`와 `RecommendationCreateRequest.image_urls`를
+통해 **클라이언트가 임의로 넣는 값**이다. 우리 스토리지에서 온 URL인지 확인하지 않는다.
+
+로그인한 사용자가 이런 주소를 넣으면 서버가 대신 요청한다.
+
+| 주소 | 노리는 것 |
+| --- | --- |
+| `http://169.254.169.254/latest/meta-data/` | 클라우드 메타데이터·자격증명 |
+| `http://localhost:8000/...` | 내부 전용 엔드포인트 |
+| 사내망 IP | 외부에서 닿지 않는 서비스 |
+
+`follow_redirects=True`라 리다이렉트도 따라가고, **받은 내용이 Gemini로 넘어가므로
+유출 경로까지 열려 있었다.** 크기 검사도 `response.content`를 다 읽은 뒤에 이뤄져
+8MB 제한 이전에 이미 메모리에 올라왔다.
+
+### 해결
+
+**호스트 허용 목록.** 설정에서 만들므로 환경마다 다르다.
+
+```python
+@staticmethod
+def _allowed_image_hosts() -> set[str]:
+    hosts = set()
+    for candidate in (settings.supabase_url, settings.public_base_url):
+        host = urlparse(str(candidate or "")).hostname
+        if host:
+            hosts.add(host.lower())
+    return hosts
+```
+
+운영 값으로는 `<ref>.supabase.co`와 `aidfit-backend.vercel.app` 두 곳이고,
+스토리지 경로와 업로드 폴백 경로가 모두 덮인다.
+
+**리다이렉트는 막지 않고 홉마다 다시 검사한다.** 첫 주소만 보면 신뢰하는 호스트가
+한 번 넘기는 것으로 우회된다. 스토리지가 서명된 주소로 넘기는 정상 동작은 유지해야 하므로
+차단이 아니라 재검사다. 3홉을 넘으면 포기한다.
+
+**본문은 스트리밍하며 자른다.** 다 받은 뒤 크기를 재면 상한을 넘는 응답이 이미 올라와 있다.
+
+```python
+async for chunk in response.aiter_bytes():
+    size += len(chunk)
+    if size > limit:
+        raise RuntimeError(...)
+```
+
+### 기존 데이터 확인
+
+허용 목록은 이미 저장된 사진을 막을 수 있다. 운영 DB로 확인했다 —
+`closet_items.image_url` 전량이 허용 호스트(Supabase)였다.
+
+> 허용 목록을 넣을 때는 **이미 저장된 값이 그 목록을 통과하는지** 먼저 센다.
+> 통과하지 못하면 기존 사용자의 기능이 조용히 멈춘다.
+
+### 회귀 테스트
+
+차단이 실제로 되는지, 정상 경로가 안 막히는지 둘 다 박았다.
+
+| 테스트 | 확인 |
+| --- | --- |
+| 낯선 호스트 · 메타데이터 IP · `localhost`/사설망 · `file://` | 거부 |
+| 목록 밖으로 리다이렉트 | 거부, **그 목적지로 요청이 나가지 않는 것**까지 단언 |
+| 같은 호스트 리다이렉트 | 허용 (서명 주소) |
+| 리다이렉트 루프 | 3홉 초과 시 포기 |
+
+---
+
 ## 체크리스트
 
 - [ ] `.env.example`에 실제 값이 들어가지 않았는가
@@ -194,6 +324,12 @@ FK 때문에 **삭제 순서가 있다.** 자식부터 지운다.
 - [ ] `EXPO_PUBLIC_*`는 env 등록 → 배포 순서를 지켰는가
 - [ ] `vercel env pull`로 만든 평문 파일을 지웠는가
 - [ ] 검증용 데이터를 정리했는가
+- [ ] 인증 없이 토큰을 내주는 엔드포인트가 라우터에 등록돼 있지 않은가
+- [ ] "MVP라서 나중에"라고 적힌 임시 구현이 실제로 열려 있지 않은가
+- [ ] 클라이언트가 준 URL로 서버가 요청을 보내는 곳이 있는가 — 호스트를 검사하는가
+- [ ] 리다이렉트를 따라간다면 홉마다 다시 검사하는가
+- [ ] 외부 응답을 다 읽은 뒤에 크기를 재고 있지 않은가
+- [ ] JWT 시크릿이 기본값(`change-me`)으로 서명되고 있지 않은가
 
 ---
 
@@ -201,3 +337,4 @@ FK 때문에 **삭제 순서가 있다.** 자식부터 지운다.
 
 - [배포·인프라](./01-deployment-infra.md) — Vercel 설정
 - [이미지 스토리지](./03-image-storage.md) — 스토리지 삭제 시 주의점
+- [12 로컬은 통과하는데 배포만 죽는다](./12-works-locally-fails-deployed.md) — 환경변수·접속 문자열 결함
