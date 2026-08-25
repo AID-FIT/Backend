@@ -572,3 +572,4 @@ async for update in self.graph.astream(state, stream_mode="updates"):
 
 - [04 AI 연동](./04-ai-integration.md) — mock→실물 전환, 동기 호출 분리
 - [07 벡터 검색](./07-vector-search.md) — pgvector 이전, 이번 §1의 회귀가 발생한 지점
+- [09 홈 필터](./09-home-filtering.md) — §3·§5·§7의 후속. 칩을 클라이언트 필터로 내리고 피드를 36칸으로 키웠다
