@@ -13,7 +13,7 @@ from app.schemas.recommendation import RecommendationCreateRequest, Recommendati
 from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
 from app.services.target_category import infer_target_category
-from app.services.user_service import UserService
+from app.services.user_service import UserService, to_agent_profile
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -167,14 +167,14 @@ async def _build_home_request(
     `/home`과 `/home/stream`이 같은 조건으로 돌아야 한다. 한쪽에만 필터를
     추가하면 스트리밍과 폴백이 서로 다른 결과를 주게 된다.
     """
-    preference = await UserService().get_preference(db, current_user)
+    user_service = UserService()
+    preference = await user_service.get_preference(db, current_user)
     closet_service = ClosetService()
     closet_items = await closet_service.list_for_user(db, current_user)
-    sizes = preference.sizes if preference else {}
-    age_range = sizes.get("age_range") if isinstance(sizes, dict) else None
     closet_payload = [closet_service.to_agent_payload(item) for item in closet_items]
-    preferred_styles = preference.styles if preference else []
-    user_profile = {"age_group": age_range, "preferred_styles": preferred_styles}
+    user_profile = to_agent_profile(preference)
+    age_range = user_profile["age_group"]
+    preferred_styles = user_profile["preferred_styles"]
 
     query = _build_home_query(
         closet_items=closet_payload,

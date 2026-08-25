@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.db.models import ChatConversation, ChatMessage
 from app.services.closet_service import ClosetService
 from app.services.recommendation_service import RecommendationService
+from app.services.user_service import UserService, to_agent_profile
 
 # Agent 입력에 다시 넣을 직전 대화 수. 늘릴수록 맥락은 좋아지지만 토큰이 커진다.
 DEFAULT_HISTORY_LIMIT = 20
@@ -26,9 +27,11 @@ class ChatService:
         recommendation_service: RecommendationService | None = None,
         closet_service: ClosetService | None = None,
         candidate_cache_ttl_seconds: int | None = None,
+        user_service: UserService | None = None,
     ) -> None:
         self.recommendation_service = recommendation_service or RecommendationService()
         self.closet_service = closet_service or ClosetService()
+        self.user_service = user_service or UserService()
         self.candidate_cache_ttl_seconds = (
             settings.rag_candidate_cache_ttl_seconds
             if candidate_cache_ttl_seconds is None
@@ -117,6 +120,8 @@ class ChatService:
         previous_context = self._extract_previous_agent_context(history)
         closet_items = await self.closet_service.list_for_user_id(db, user_id)
         closet_payload = [self.closet_service.to_agent_payload(item) for item in closet_items]
+        preference = await self.user_service.get_preference_for_user_id(db, user_id)
+        user_profile = to_agent_profile(preference)
 
         user_message = ChatMessage(
             conversation_id=conversation_id,
@@ -137,6 +142,7 @@ class ChatService:
             user_id=user_id,
             image_urls=normalized_image_urls,
             closet_items=closet_payload,
+            user_profile=user_profile,
             chat_history=self._serialize_history(history),
             previous_rag_results=previous_context.get("candidate_pool", []),
             previous_shown_item_refs=previous_context.get("shown_item_refs", []),

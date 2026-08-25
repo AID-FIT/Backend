@@ -40,6 +40,16 @@ class FakeChatClosetService:
         return item
 
 
+class FakeChatUserService:
+    def __init__(self, preference: object | None) -> None:
+        self.preference = preference
+        self.user_ids: list[str] = []
+
+    async def get_preference_for_user_id(self, db: object, user_id: str) -> object | None:
+        self.user_ids.append(user_id)
+        return self.preference
+
+
 class CapturingRecommendationService:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -129,7 +139,7 @@ def test_serialized_history_carries_only_role_and_content() -> None:
     ]
 
 
-def test_chat_sends_authenticated_users_closet_to_agent() -> None:
+def test_chat_sends_authenticated_users_closet_and_profile_to_agent() -> None:
     closet_payload = {
         "closet_item_id": "closet_001",
         "name": "내 와이드 팬츠",
@@ -137,10 +147,14 @@ def test_chat_sends_authenticated_users_closet_to_agent() -> None:
         "category": "하의",
     }
     closet_service = FakeChatClosetService([closet_payload])
+    user_service = FakeChatUserService(
+        SimpleNamespace(styles=["minimal", "casual"], sizes={"age_range": "20s"})
+    )
     recommendation_service = CapturingRecommendationService()
     service = StubChatService(
         recommendation_service=recommendation_service,
         closet_service=closet_service,
+        user_service=user_service,
     )
 
     asyncio.run(
@@ -154,7 +168,12 @@ def test_chat_sends_authenticated_users_closet_to_agent() -> None:
     )
 
     assert closet_service.user_ids == ["user_001"]
+    assert user_service.user_ids == ["user_001"]
     assert recommendation_service.calls[0]["closet_items"] == [closet_payload]
+    assert recommendation_service.calls[0]["user_profile"] == {
+        "age_group": "20s",
+        "preferred_styles": ["minimal", "casual"],
+    }
 
 
 def test_chat_service_restores_private_previous_rag_context() -> None:
