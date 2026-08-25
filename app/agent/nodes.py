@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from pydantic import ValidationError
@@ -19,6 +20,9 @@ from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
 from app.services.target_category import query_names_a_category
 from app.services.vlm_service import VlmService
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_error(code: str, message: str, retryable: bool, source: str) -> dict[str, Any]:
@@ -143,9 +147,13 @@ class AgentNodes:
         try:
             vlm_response = await self.call_vlm(state.get("image_urls") or [])
         except ValidationError:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "VLM_INVALID_RESPONSE")
             state["error"] = build_error("VLM_INVALID_RESPONSE", "이미지 분석 결과 형식이 올바르지 않습니다.", True, "vlm")
             return state
         except Exception:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "VLM_ANALYSIS_FAILED")
             state["error"] = build_error("VLM_ANALYSIS_FAILED", "이미지 분석에 실패했습니다. 다시 시도해주세요.", True, "vlm")
             return state
 
@@ -449,9 +457,13 @@ class AgentNodes:
         try:
             rag_response = await self.call_rag(rag_request)
         except ValidationError:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "RAG_INVALID_RESPONSE")
             state["error"] = build_error("RAG_INVALID_RESPONSE", "추천 상품 검색 결과 형식이 올바르지 않습니다.", True, "rag")
             return state
         except Exception:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "RAG_SEARCH_FAILED")
             state["error"] = build_error("RAG_SEARCH_FAILED", "추천 상품 검색 중 오류가 발생했습니다.", True, "rag")
             return state
 
@@ -494,9 +506,13 @@ class AgentNodes:
         try:
             rag_response = await self.call_rag(rag_request)
         except ValidationError:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "RAG_INVALID_RESPONSE")
             state["error"] = build_error("RAG_INVALID_RESPONSE", "추천 상품 검색 결과 형식이 올바르지 않습니다.", True, "rag")
             return state
         except Exception:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "RAG_SEARCH_FAILED")
             state["error"] = build_error("RAG_SEARCH_FAILED", "추천 상품 검색 중 오류가 발생했습니다.", True, "rag")
             return state
 
@@ -614,9 +630,13 @@ class AgentNodes:
             state["final_response"] = AgentResponse.model_validate(response).model_dump()
             state["final_answer"] = state["final_response"]
         except ValidationError:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "FINAL_RESPONSE_INVALID")
             state["error"] = build_error("FINAL_RESPONSE_INVALID", "최종 추천 결과 형식이 올바르지 않습니다.", True, "llm")
             return await self.error_response_node(state)
         except Exception:
+            # 트레이스백 없이 문구만 바꾸면 배포 후 원인을 볼 방법이 없다.
+            logger.exception("agent node failed: %s", "FINAL_RESPONSE_FAILED")
             state["error"] = build_error("FINAL_RESPONSE_FAILED", "최종 추천 결과 생성에 실패했습니다.", True, "llm")
             return await self.error_response_node(state)
         return state

@@ -329,7 +329,7 @@ CATEGORY_VALUES = set(CATEGORY_ALIASES.values())
 
 # --- 값 정규화 ---
 
-def clean_value(value: Any) -> Optional[str]:
+def clean_value(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
@@ -345,21 +345,21 @@ def split_tokens(value: Any) -> set[str]:
     return {token.strip().lower() for token in text.split(",") if clean_value(token)}
 
 
-def normalize_gender(value: Any) -> Optional[str]:
+def normalize_gender(value: Any) -> str | None:
     text = clean_value(value)
     if not text:
         return None
     return GENDER_ALIASES.get(text.lower(), GENDER_ALIASES.get(text, text))
 
 
-def normalize_category(value: Any) -> Optional[str]:
+def normalize_category(value: Any) -> str | None:
     text = clean_value(value)
     if not text:
         return None
     return CATEGORY_ALIASES.get(text.lower(), CATEGORY_ALIASES.get(text, text))
 
 
-def normalize_season_token(value: Any) -> Optional[str]:
+def normalize_season_token(value: Any) -> str | None:
     text = clean_value(value)
     if not text:
         return None

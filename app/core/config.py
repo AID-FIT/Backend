@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     # HNSW 인덱스는 2000차원까지만 지원해 1536을 쓴다.
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 1536
-    rag_vector_backend: str = "static"
+    # 기본값이 static이면 환경변수를 하나 빠뜨린 환경이 조용히 전부 실패한다.
+    # static 경로는 chromadb를 import하는데 requirements에 없고, 카탈로그
+    # 데이터(data/)도 .vercelignore로 배포에서 빠진다. 즉 배포에서는 동작할 수
+    # 없는 값이다. 동작하는 쪽을 기본값으로 둔다.
+    rag_vector_backend: str = "pgvector"
     google_client_ids_raw: str = Field(default="", alias="GOOGLE_CLIENT_IDS")
     apple_client_ids_raw: str = Field(default="", alias="APPLE_CLIENT_IDS")
     auth_allow_unverified_tokens: bool = False
