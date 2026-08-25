@@ -12,6 +12,9 @@ from app.services.gemini_client import extract_text, parse_json_object
 
 # Only remote images can be inlined into a vision request.
 ALLOWED_IMAGE_SCHEMES = {"http", "https"}
+# 리다이렉트는 따라가되 홉마다 다시 검사한다. 신뢰하는 호스트가 다른 곳으로
+# 넘겨도 그 목적지가 허용 목록에 없으면 가지 않는다.
+MAX_IMAGE_REDIRECTS = 3
 
 # Some image hosts block requests that do not identify themselves.
 IMAGE_USER_AGENT = "AID-FIT-VLM/1.0 (+https://github.com/AID-FIT)"
@@ -206,25 +209,72 @@ class VlmService:
             return [self._normalize_item({"is_fashion_item": False}, image_url)]
         return items
 
-    async def _download_image(self, client: httpx.AsyncClient, image_url: str) -> tuple[bytes, str]:
-        # generateContent cannot fetch remote URLs, so the bytes are inlined here.
-        scheme = urlparse(image_url).scheme.lower()
-        if scheme not in ALLOWED_IMAGE_SCHEMES:
+    @staticmethod
+    def _allowed_image_hosts() -> set[str]:
+        """이미지를 가져와도 되는 호스트.
+
+        우리가 내준 주소(스토리지·공개 베이스 URL)만 담는다. 설정에서 만들므로
+        환경마다 다르고, 로컬 개발은 PUBLIC_BASE_URL이 가리키는 곳이 열린다.
+        """
+        hosts = set()
+        for candidate in (settings.supabase_url, settings.public_base_url):
+            host = urlparse(str(candidate or "")).hostname
+            if host:
+                hosts.add(host.lower())
+        return hosts
+
+    def _assert_image_url_allowed(self, image_url: str) -> None:
+        """클라이언트가 준 주소를 서버가 그대로 가져오지 않도록 막는다.
+
+        이 주소는 요청 본문(`image_urls`)으로 들어온다. 검사하지 않으면
+        로그인한 사용자가 클라우드 메타데이터(169.254.169.254)나 사내망 주소를
+        넣어 서버가 대신 요청하게 만들 수 있다. 응답 내용은 Gemini로 넘어가므로
+        유출 경로까지 열린다. 스킴만 보는 것으로는 부족하다 — 호스트를 본다.
+        """
+        parsed = urlparse(image_url)
+        if parsed.scheme.lower() not in ALLOWED_IMAGE_SCHEMES:
             raise ValueError(f"unsupported image url scheme: {image_url}")
 
-        response = await client.get(image_url)
-        response.raise_for_status()
+        host = (parsed.hostname or "").lower()
+        allowed = self._allowed_image_hosts()
+        if not host or host not in allowed:
+            # 어디로 가려 했는지는 남기되 응답에는 싣지 않는다.
+            raise ValueError(f"image host is not allowed: {host or '(없음)'}")
 
-        mime_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-        if not mime_type.startswith("image/"):
-            raise RuntimeError(f"image url did not return an image: {image_url}")
+    async def _download_image(self, client: httpx.AsyncClient, image_url: str) -> tuple[bytes, str]:
+        # generateContent cannot fetch remote URLs, so the bytes are inlined here.
+        url = image_url
+        for _ in range(MAX_IMAGE_REDIRECTS + 1):
+            self._assert_image_url_allowed(url)
+            async with client.stream("GET", url, follow_redirects=False) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise RuntimeError(f"image url redirected without a target: {url}")
+                    url = str(httpx.URL(url).join(location))
+                    continue
 
-        content = response.content
-        if not content:
-            raise RuntimeError(f"image url returned an empty body: {image_url}")
-        if len(content) > int(settings.vlm_max_image_bytes):
-            raise RuntimeError(f"image is larger than VLM_MAX_IMAGE_BYTES: {image_url}")
-        return content, mime_type
+                response.raise_for_status()
+                mime_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if not mime_type.startswith("image/"):
+                    raise RuntimeError(f"image url did not return an image: {image_url}")
+
+                limit = int(settings.vlm_max_image_bytes)
+                chunks: list[bytes] = []
+                size = 0
+                # 다 받은 뒤에 크기를 재면 상한을 넘는 응답이 이미 메모리에 올라온다.
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > limit:
+                        raise RuntimeError(f"image is larger than VLM_MAX_IMAGE_BYTES: {image_url}")
+                    chunks.append(chunk)
+
+                content = b"".join(chunks)
+                if not content:
+                    raise RuntimeError(f"image url returned an empty body: {image_url}")
+                return content, mime_type
+
+        raise RuntimeError(f"image url redirected too many times: {image_url}")
 
     def _build_payload(self, image_bytes: bytes, mime_type: str, multi_item: bool = False) -> dict[str, Any]:
         system_instruction = VLM_MULTI_SYSTEM_INSTRUCTION if multi_item else VLM_SYSTEM_INSTRUCTION

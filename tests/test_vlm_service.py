@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -9,6 +10,16 @@ from app.agent.nodes import AgentNodes
 from app.services import vlm_service as vlm_module
 from app.services.vlm_service import VlmService
 from tests.fake_ai import DeterministicVlmService
+
+
+@pytest.fixture(autouse=True)
+def allow_the_test_cdn(monkeypatch):
+    """이 테스트들의 이미지는 우리 스토리지에서 온 것으로 둔다.
+
+    VLM은 허용 목록에 있는 호스트에서만 이미지를 가져온다. 목록은 설정에서
+    만들어지므로, 테스트가 쓰는 호스트를 공개 베이스 URL로 지정한다.
+    """
+    monkeypatch.setattr(vlm_module.settings, "public_base_url", "https://cdn.aidfit.com")
 
 
 # Attributes as the model returns them, without the per-item verdict.
@@ -61,6 +72,16 @@ class FakeResponse:
     def json(self) -> dict:
         return self._payload or {}
 
+    @property
+    def is_redirect(self) -> bool:
+        return self.status_code in (301, 302, 303, 307, 308) and bool(
+            self.headers.get("location")
+        )
+
+    async def aiter_bytes(self):
+        # 실제 httpx처럼 조각으로 흘려준다. 서비스가 받으면서 크기를 자른다.
+        yield self.content
+
 
 class FakeAsyncClient:
     # Image bytes are the join key so responses stay correct under concurrency.
@@ -105,6 +126,11 @@ class FakeAsyncClient:
             content=spec["content"],
             headers={"content-type": spec["content_type"]},
         )
+
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, **kwargs):
+        # 서비스는 홉마다 검사하려고 stream + follow_redirects=False를 쓴다.
+        yield await self.get(url)
 
     async def post(self, url: str, headers: dict, json: dict) -> FakeResponse:
         FakeAsyncClient.post_calls.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
@@ -672,3 +698,89 @@ def test_agent_vlm_node_reports_failures_as_contract_errors(monkeypatch) -> None
     assert result["error"]["code"] == "VLM_ANALYSIS_FAILED"
     assert result["error"]["source"] == "vlm"
     assert result["error"]["retryable"] is True
+
+
+class RedirectingFakeClient:
+    """한 번 리다이렉트한 뒤 목적지 본문을 준다. 홉별 검사 확인용."""
+
+    def __init__(self, location: str) -> None:
+        self.location = location
+        self.requested: list[str] = []
+
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, **kwargs):
+        self.requested.append(url)
+        if len(self.requested) == 1:
+            yield FakeResponse(url=url, status_code=302, headers={"location": self.location})
+        else:
+            yield FakeResponse(
+                url=url, status_code=200, content=b"payload",
+                headers={"content-type": "image/jpeg"},
+            )
+
+
+def download(client, url: str):
+    return asyncio.run(VlmService()._download_image(client, url))
+
+
+def test_a_host_we_did_not_hand_out_is_refused() -> None:
+    """image_urls는 클라이언트가 넣는 값이다.
+
+    검사하지 않으면 로그인한 사용자가 임의 주소를 넣어 서버가 대신 요청하게
+    만들 수 있고, 응답 내용은 Gemini로 넘어간다.
+    """
+    with pytest.raises(ValueError, match="not allowed"):
+        download(FakeAsyncClient(), "https://evil.example/photo.jpg")
+
+
+def test_cloud_metadata_is_refused() -> None:
+    # 서버리스·클라우드에서 자격증명이 새는 대표 경로다.
+    with pytest.raises(ValueError, match="not allowed"):
+        download(FakeAsyncClient(), "http://169.254.169.254/latest/meta-data/")
+
+
+def test_internal_addresses_are_refused() -> None:
+    for url in ("http://localhost:8000/admin", "http://10.0.0.5/", "http://[::1]/"):
+        with pytest.raises(ValueError, match="not allowed"):
+            download(FakeAsyncClient(), url)
+
+
+def test_a_non_http_scheme_is_refused() -> None:
+    with pytest.raises(ValueError, match="scheme"):
+        download(FakeAsyncClient(), "file:///etc/passwd")
+
+
+def test_a_redirect_off_the_allowed_host_is_refused() -> None:
+    """신뢰하는 호스트가 다른 곳으로 넘겨도 따라가지 않는다.
+
+    허용 검사를 첫 주소에만 하면 리다이렉트 한 번으로 우회된다.
+    """
+    client = RedirectingFakeClient("http://169.254.169.254/latest/meta-data/")
+
+    with pytest.raises(ValueError, match="not allowed"):
+        download(client, "https://cdn.aidfit.com/item_001.jpg")
+
+    assert len(client.requested) == 1, "차단된 목적지로 요청이 나가면 안 된다"
+
+
+def test_a_redirect_within_the_allowed_host_is_followed() -> None:
+    # 스토리지는 서명된 주소로 넘기는 일이 있다. 같은 호스트면 따라간다.
+    client = RedirectingFakeClient("https://cdn.aidfit.com/real.jpg")
+
+    content, mime_type = download(client, "https://cdn.aidfit.com/item_001.jpg")
+
+    assert content == b"payload"
+    assert mime_type == "image/jpeg"
+
+
+def test_a_redirect_loop_gives_up() -> None:
+    class LoopingClient(RedirectingFakeClient):
+        @asynccontextmanager
+        async def stream(self, method: str, url: str, **kwargs):
+            self.requested.append(url)
+            yield FakeResponse(url=url, status_code=302, headers={"location": self.location})
+
+    client = LoopingClient("https://cdn.aidfit.com/again.jpg")
+
+    with pytest.raises(RuntimeError, match="redirected too many times"):
+        download(client, "https://cdn.aidfit.com/item_001.jpg")

@@ -94,14 +94,21 @@ def test_server_stops_and_cleans_up_after_close(tmp_path: Path) -> None:
         httpx.get(resolved[0], timeout=2)
 
 
-def test_real_download_path_accepts_the_served_photo(tmp_path: Path) -> None:
+def test_real_download_path_accepts_the_served_photo(tmp_path: Path, monkeypatch) -> None:
     # Runs the actual httpx download against a real server, not a fake client.
     import asyncio
+    from urllib.parse import urlparse
 
+    from app.services import vlm_service as vlm_module
     from app.services.vlm_service import VlmService
 
     image = write_image(tmp_path, "coat.jpg", b"binary-image-payload")
     resolved, server = script.resolve_inputs([str(image)])
+    # VLM은 허용 호스트에서만 가져온다. 이 임시 서버를 그 자리에 둔다.
+    origin = urlparse(resolved[0])
+    monkeypatch.setattr(
+        vlm_module.settings, "public_base_url", f"{origin.scheme}://{origin.netloc}"
+    )
 
     async def download() -> tuple[bytes, str]:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -161,8 +168,14 @@ def test_redirecting_image_url_is_followed(monkeypatch) -> None:
     from app.services import vlm_service as vlm_module
     from app.services.vlm_service import VlmService
 
+    from urllib.parse import urlparse
+
     monkeypatch.setattr(vlm_module.settings, "vlm_max_image_bytes", 1024)
     server = RedirectingServer()
+    origin = urlparse(server.url)
+    monkeypatch.setattr(
+        vlm_module.settings, "public_base_url", f"{origin.scheme}://{origin.netloc}"
+    )
 
     async def download() -> tuple[bytes, str]:
         async with httpx.AsyncClient(
