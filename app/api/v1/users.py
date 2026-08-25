@@ -20,6 +20,8 @@ def _profile_response(user: User, preference: UserPreference | None) -> UserProf
         nickname=user.nickname,
         role=user.role,
         age_range=sizes.get("age_range") if isinstance(sizes, dict) else None,
+        gender=preference.gender if preference else None,
+        height_cm=preference.height_cm if preference else None,
         styles=preference.styles if preference else [],
         preferred_colors=preference.preferred_colors if preference else [],
         avoid_items=preference.avoid_items if preference else [],

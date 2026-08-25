@@ -15,6 +15,8 @@ from app.api.v1 import recommendations as home_api
 class StubPreference:
     styles = ["스트릿"]
     sizes = {"age_range": "20대"}
+    gender = "men"
+    height_cm = 178
 
 
 class StubUserService:

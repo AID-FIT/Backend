@@ -23,6 +23,8 @@ class UserProfile(BaseModel):
 
     age_group: str | None = None
     preferred_styles: list[str] = Field(default_factory=list)
+    gender: str | None = None
+    height_cm: int | None = None
 
 
 class ClosetItem(BaseModel):
@@ -127,6 +129,7 @@ class AppliedFilters(BaseModel):
     mood: str | None = None
     season: str | None = None
     age_range: str | None = None
+    gender: str | None = None
     preferred_styles: list[str] = Field(default_factory=list)
     prompt: str = ""
     result_count: int = 0

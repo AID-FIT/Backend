@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -12,7 +12,13 @@ from app.schemas.chat import (
     MessageSendRequest,
     MessageSendResponse,
 )
-from app.services.chat_service import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ChatNotFoundError, ChatService
+from app.services.chat_service import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    ChatNotFoundError,
+    ChatService,
+    ClosetItemNotFoundError,
+)
 
 router = APIRouter()
 
@@ -80,8 +86,40 @@ async def send_message(
             conversation_id=conversation_id,
             query=payload.query,
             image_urls=payload.image_urls,
+            closet_item_ids=payload.closet_item_ids,
         )
     except ChatNotFoundError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
+    except ClosetItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Some closet items were not found") from None
 
     return MessageSendResponse(**result)
+
+
+@router.delete("", status_code=204)
+async def delete_all_conversations(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    # 지울 게 없어도 204다. 다시 눌러도 같은 결과여야 한다.
+    await ChatService().delete_all_conversations(db=db, user_id=current_user.id)
+    return Response(status_code=204)
+
+
+@router.delete("/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    try:
+        await ChatService().delete_conversation(
+            db=db,
+            conversation_id=conversation_id,
+            user_id=current_user.id,
+        )
+    except ChatNotFoundError:
+        # 남의 대화도 없는 대화와 똑같이 답한다. 있다는 사실조차 알리지 않는다.
+        raise HTTPException(status_code=404, detail="Conversation not found") from None
+
+    return Response(status_code=204)

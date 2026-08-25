@@ -5,6 +5,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.schemas.recommendation import AgentResponse
 
+# 한 번에 참고할 옷장 아이템 수 상한. 사진 첨부 상한과 같은 값으로 둔다.
+# 더 늘리면 프롬프트만 커지고, 고른 옷의 신호가 서로를 희석한다.
+MAX_SELECTED_CLOSET_ITEMS = 8
+
 
 class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -50,6 +54,10 @@ class MessageSendRequest(BaseModel):
     # role과 user_id는 서버가 정한다. 클라이언트가 지정하지 못하게 둔다.
     query: str = Field(min_length=1)
     image_urls: list[str] = Field(default_factory=list)
+    # 비우면 지금까지처럼 옷장 전체를 본다. 고르면 그 옷만 이번 턴의 범위가 된다.
+    closet_item_ids: list[str] = Field(
+        default_factory=list, max_length=MAX_SELECTED_CLOSET_ITEMS
+    )
 
 
 class MessageSendResponse(BaseModel):

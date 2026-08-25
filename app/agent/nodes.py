@@ -412,6 +412,12 @@ class AgentNodes:
         if preferred_styles and "preferred_styles" not in filters:
             filters["preferred_styles"] = preferred_styles
 
+        # 프로필 성별은 카탈로그 조건으로 그대로 내려간다. unisex는 조건이 아니라
+        # "가리지 않는다"는 뜻이라 걸지 않는다(걸면 남녀 상품이 전부 빠진다).
+        profile_gender = user_profile.get("gender")
+        if profile_gender and profile_gender != "unisex" and "gender" not in filters:
+            filters["gender"] = profile_gender
+
         inferred = self._inferred_vlm_filters(vlm_items)
         # 질의가 찾는 옷을 말했다면 사진에서 읽은 카테고리는 쓰지 않는다.
         # "이 바지에 어울리는 상의"에서 VLM의 category는 바지고, 그대로 넣으면
