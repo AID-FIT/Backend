@@ -401,7 +401,7 @@ def call_home(**overrides) -> tuple[dict, dict]:
     seen: dict = {}
 
     class StubRecommendationService:
-        async def create(self, **kwargs):
+        async def create_home(self, **kwargs):
             seen.update(kwargs)
             return {
                 "response": {
@@ -447,7 +447,7 @@ def test_home_fills_the_feed_from_the_ranked_leftovers() -> None:
     assert len(result["recommendations"]) == _HOME_FEED_SIZE
 
 
-def test_home_asks_the_pipeline_for_the_leftovers() -> None:
+def test_home_asks_the_workflow_for_the_leftovers() -> None:
     # 트레이스를 요청하지 않으면 랭킹 결과가 없어 피드를 채울 재료가 없다.
     _result, received = call_home()
 

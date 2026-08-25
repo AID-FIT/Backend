@@ -107,7 +107,8 @@ def _build_home_query(
     taste = ". ".join(parts)
     request = prompt.strip()
 
-    # 4) 추천 지시 — "무신사"를 명시해 retrieval planner가 catalog 검색을 택하게 한다.
+    # 4) 추천 지시 — 홈 검색은 코드에서 무신사로 고정되며, 이 문구는 임베딩
+    # 검색어가 구매 가능한 상품 추천이라는 맥락을 유지하도록 돕는다.
     if not request:
         return f"{taste}. 이 취향에 어울리는 무신사 상품으로 오늘의 코디를 추천해줘." if taste else _HOME_FALLBACK_QUERY
 
@@ -225,16 +226,9 @@ async def _build_home_request(
             "query": query,
             "user_id": current_user.id,
             "context": context,
-            # Closet rows already contain VLM metadata; treating every owned image as
-            # a newly attached reference would exclude the whole closet from retrieval.
-            "image_urls": [],
             "closet_items": closet_payload,
             "use_closet_style": True,
             "user_profile": user_profile,
-            # 홈 타일은 "사러 갈 만한 상품"을 보여주는 자리다. 검색 계획이 closet이나
-            # hybrid를 고르면 사용자가 이미 가진 옷이 타일로 올라온다. 그걸 막는다.
-            "recommendation_target": "musinsa",
-            "lock_retrieval_target": True,
             # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
             # 된다. 타일이 같은 종류로만 차는 것을 막는다. 다만 "바지"처럼 종류를 찍어
             # 검색했다면 섞는 쪽이 오히려 틀린 답이므로 그때는 끈다.
@@ -327,7 +321,9 @@ async def get_home_recommendation(
         db, current_user, prompt, refresh_seed, category, mood, season
     )
     # 피드를 채우려면 LLM이 고르고 남은 랭킹 결과가 필요하다. 트레이스로 받는다.
-    trace = await RecommendationService().create(**request["run_kwargs"], return_trace=True)
+    trace = await RecommendationService().create_home(
+        **request["run_kwargs"], return_trace=True
+    )
     result = _fill_home_feed(trace["response"], trace.get("ranked_items") or [])
     return RecommendationResponse(
         **result,
@@ -365,7 +361,7 @@ async def stream_home_recommendation(
     async def events():
         service = RecommendationService()
         try:
-            async for event in service.stream(**request["run_kwargs"]):
+            async for event in service.stream_home(**request["run_kwargs"]):
                 if event["type"] != "result":
                     yield _sse(event)
                     continue

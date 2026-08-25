@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.agent_pipeline import AidFitAgentPipeline
+from app.agent.home_workflow import HomeRecommendationWorkflow
 from app.db.models import (
     Recommendation,
     RecommendationItem,
@@ -13,8 +14,23 @@ from app.db.models import (
 
 
 class RecommendationService:
-    def __init__(self, pipeline: AidFitAgentPipeline | None = None) -> None:
-        self.pipeline = pipeline or AidFitAgentPipeline()
+    def __init__(
+        self,
+        pipeline: AidFitAgentPipeline | None = None,
+        home_workflow: HomeRecommendationWorkflow | None = None,
+    ) -> None:
+        self._pipeline = pipeline
+        self.home_workflow = home_workflow or HomeRecommendationWorkflow(
+            pipeline.nodes if pipeline is not None else None
+        )
+
+    @property
+    def pipeline(self) -> AidFitAgentPipeline:
+        # Home endpoints do not need to compile or execute the common Agent graph.
+        # Other recommendation paths initialize it lazily with the same shared nodes.
+        if self._pipeline is None:
+            self._pipeline = AidFitAgentPipeline(self.home_workflow.nodes)
+        return self._pipeline
 
     async def create(
         self,
@@ -38,7 +54,7 @@ class RecommendationService:
         previous_retrieval_target: str | None = None,
         return_trace: bool = False,
     ) -> dict:
-        """비영속 추천 생성. 홈 피드처럼 결과를 저장하지 않는 경로에서 사용한다."""
+        """공통 Agent 그래프로 비영속 추천을 생성한다."""
         # Centralize image normalization before entering the LangGraph pipeline.
         normalized_image_urls = image_urls or ([image_url] if image_url else [])
         return await self.pipeline.run(
@@ -77,6 +93,35 @@ class RecommendationService:
             normalized_image_urls[0] if normalized_image_urls else None
         )
         return self.pipeline.stream(**kwargs)
+
+    async def create_home(
+        self,
+        query: str,
+        user_id: str,
+        closet_items: list[dict] | None = None,
+        use_closet_style: bool = True,
+        user_profile: dict | None = None,
+        context: dict | None = None,
+        diversify_by_category: bool = False,
+        max_recommendations: int | None = None,
+        return_trace: bool = False,
+    ) -> dict:
+        """Create a home recommendation through the fixed, non-Agent path."""
+        return await self.home_workflow.run(
+            query=query,
+            user_id=user_id,
+            closet_items=closet_items or [],
+            use_closet_style=use_closet_style,
+            user_profile=user_profile or {},
+            context=context or {},
+            diversify_by_category=diversify_by_category,
+            max_recommendations=max_recommendations,
+            return_trace=return_trace,
+        )
+
+    def stream_home(self, **kwargs) -> AsyncIterator[dict]:
+        """Stream only the stages actually executed by the fixed home path."""
+        return self.home_workflow.stream(**kwargs)
 
     async def create_and_persist(
         self,
