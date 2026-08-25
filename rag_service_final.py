@@ -34,6 +34,8 @@ class RAGRequest(BaseModel):
     vlm_items: list[dict[str, Any]] = Field(default_factory=list)
     closet_items: list[dict[str, Any]] = Field(default_factory=list)
     use_closet_style: bool = True
+    use_preference_search: bool = False
+    request_mode: Literal["direct", "coordination", "similarity"] = "direct"
     filters: Optional[dict[str, Any]] = None
     top_k: int = DEFAULT_TOP_K
 
@@ -559,21 +561,17 @@ def limit_words(text: str, max_words: int = MAX_SEARCH_WORDS) -> str:
 def build_search_text(request: RAGRequest, filters: dict[str, Any]) -> str:
     parts = [expand_query(request.query)]
 
-    for item in request.vlm_items[:3]:
-        text = style_text(item)
-        if text:
-            parts.append(text)
-
-    if request.use_closet_style:
-        for item in request.closet_items[:5]:
+    if request.request_mode != "coordination":
+        for item in request.vlm_items[:3]:
             text = style_text(item)
             if text:
                 parts.append(text)
 
-    preferred_styles = (request.user_profile or {}).get("preferred_styles") or []
-    if isinstance(preferred_styles, str):
-        preferred_styles = [preferred_styles]
-    parts.extend(str(style) for style in preferred_styles if clean_value(style))
+    if request.use_preference_search:
+        preferred_styles = (request.user_profile or {}).get("preferred_styles") or []
+        if isinstance(preferred_styles, str):
+            preferred_styles = [preferred_styles]
+        parts.extend(str(style) for style in preferred_styles if clean_value(style))
 
     return limit_words(" ".join(parts))
 
@@ -625,7 +623,7 @@ def infer_target_category(query: str) -> Optional[str]:
 
 def build_effective_filters(request: RAGRequest) -> dict[str, Any]:
     filters = normalize_filters(request.filters)
-    if not filters.get("category"):
+    if not filters.get("category") and request.request_mode != "coordination":
         target_category = infer_target_category(request.query)
         if target_category:
             filters["category"] = target_category
@@ -669,7 +667,6 @@ def calculate_metadata_score(
     metadata: dict[str, Any],
     intents: dict[str, set[str]],
     filters: dict[str, Any],
-    request: RAGRequest,
 ) -> float:
     score = 0.0
 
@@ -697,23 +694,6 @@ def calculate_metadata_score(
     moods = split_tokens(metadata.get("mood"))
     if moods & intents["mood"]:
         score += 0.10
-
-    preferred_styles = (request.user_profile or {}).get("preferred_styles") or []
-    if isinstance(preferred_styles, str):
-        preferred_styles = [preferred_styles]
-    preferred_tokens = {str(style).lower() for style in preferred_styles if clean_value(style)}
-    if moods & preferred_tokens:
-        score += 0.10
-
-    if request.use_closet_style and request.closet_items:
-        closet_matches = 0
-        for closet_item in request.closet_items[:5]:
-            for field in ("color", "fit", "pattern", "mood"):
-                if split_tokens(metadata.get(field)) & split_tokens(closet_item.get(field)):
-                    closet_matches += 1
-                    break
-        if closet_matches:
-            score += min(0.10, closet_matches * 0.03)
 
     return clamp_score(score)
 
@@ -831,7 +811,7 @@ def search_musinsa(
 
     items: list[RAGItem] = []
     for metadata, distance in zip(metadatas, distances):
-        metadata_score = calculate_metadata_score(metadata, intents, filters, request)
+        metadata_score = calculate_metadata_score(metadata, intents, filters)
         item = build_musinsa_rag_item(metadata, float(distance), metadata_score)
         if excluded_refs.intersection(item_refs(item)):
             continue

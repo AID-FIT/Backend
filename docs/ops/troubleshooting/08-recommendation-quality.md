@@ -29,6 +29,10 @@
 사진 속 옷이 바지니까 `category=pants`가 필터에 들어가고, **후보가 바지로 고정된다.**
 상의를 아무리 요청해도 검색 결과에 상의가 들어올 수 없다.
 
+같은 문제는 색에도 있었다. 검은 바지 사진의 `color=black`을 후보의 하드 필터로
+쓰면 흰 셔츠나 크림 니트처럼 잘 어울리는 다른 색은 LLM에 도달하기도 전에 사라진다.
+사진 속 색은 **참고 아이템의 색**이지 **찾는 상품의 필수 색**이 아니다.
+
 **(2) 질의에서 카테고리를 뽑는 로직이 pgvector 이전 중에 빠졌다.**
 
 ChromaDB 시절에는 질의에서 목표 카테고리를 읽는 단계가 있었는데, pgvector로 옮기며
@@ -37,49 +41,44 @@ ChromaDB 시절에는 질의에서 목표 카테고리를 읽는 단계가 있�
 > 저장소를 갈아끼울 때 사라지기 쉬운 것은 **저장소 코드가 아니라 그 위에 얹혀 있던
 > 보정 로직**이다. 이전 전에 "어댑터 바깥에서 어댑터를 손보던 코드"를 목록으로 만들어 둔다.
 
-### 해결
+### 해결 — Query Refiner가 참고 옷과 찾는 옷을 구분한다
 
-`app/services/target_category.py`를 두고, 질의에서 **찾는 옷**의 카테고리를 뽑는다.
+키워드 사전으로 코디 요청을 판단하지 않고, 이미 존재하는 Query Refiner LLM이
+질의·대화 기록·VLM 결과를 함께 보고 구조화된 의도를 낸다.
 
-```python
-# "바지에 어울리는 상의 추천해줘" → 추천 앞의 마지막 카테고리는 상의
-recommend_pos = query.find("추천")
+```json
+{
+  "query": "검은색 와이드 데님 팬츠와 어울리는 캐주얼 상의",
+  "request_mode": "coordination",
+  "target_category": "상의"
+}
 ```
 
-사진 속 옷은 참고 대상이고 찾는 옷은 질의가 정한다. 그래서 질의가 카테고리를 말했다면
-**VLM이 추론한 카테고리는 버린다.**
+`request_mode`는 `direct`, `coordination`, `similarity` 중 하나다. `target_category`는
+찾는 상품 종류이 명확할 때만 설정하고, "이 옷과 어울리는 옷"처럼 범위가
+열려 있으면 `null`이다. LLM 출력에는 색·계절 필터 필드가 없다.
 
-```python
-if query_names_a_category(query):
-    inferred.pop("category", None)
-```
+RAG은 `coordination`일 때 VLM의 `category`, `color`, `sense_of_season`을 후보
+필터로 바꾸지 않는다. 단, UI/API가 `context`로 명시한 필터와 LLM이 분리한
+`target_category`는 적용한다. `similarity`는 사진 속 상품과 같은 상품을 찾는
+요청이므로 VLM의 카테고리·색·계절 추론을 유지한다.
 
-### 여기서 한 번 더 틀렸다
+임베딩 문장에는 Query Refiner가 만든 관계 중심 질의를 쓴다. 코디 요청에서
+원본 VLM 메타데이터를 다시 덧붙이지 않아, 참고 옷의 색·카테고리가 검색
+중심으로 중복 강조되는 것도 막는다.
 
-첫 수정은 `category`를 **무조건** 버렸다. 그러자 호출부가 명시적으로 넘긴
-`context["category"]`까지 같이 날아갔다. 버려야 하는 것은 **VLM이 추론한 값 하나**다.
-그래서 삭제 위치를 `_inferred_vlm_filters`의 결과가 `filters`에 병합되기 **직전**으로 옮겼다.
+### 왜 문자열 비교를 쓰지 않는가
 
-```python
-inferred = self._inferred_vlm_filters(vlm_items)
-if query_names_a_category(query):
-    inferred.pop("category", None)          # 추론값만 버린다
-for key, value in inferred.items():
-    if value and key not in filters:        # 명시값은 이미 filters에 있어 덮이지 않는다
-        filters[key] = value
-```
-
-### 왜 두 값을 비교하지 않는가
-
-"VLM 카테고리와 질의 카테고리가 다르면 버린다"가 자연스러워 보이지만 **불가능하다.**
-VLM은 영어(`"top"`)를, 질의 키워드 사전은 한국어(`"상의"`)를 쓴다. 같은 옷이어도 문자열이 다르다.
-그래서 판단 기준을 "다른가"가 아니라 **"질의가 말했는가"**로 잡았다.
+VLM은 영어(`"top"`)를 낼 수 있고 사용자는 한국어(`"상의"`)를 쓴다. 더 큰 문제는
+같은 "바지"라도 코디 요청에서는 참고 옷일 수 있고, 유사 상품 요청에서는 찾는
+옷일 수 있다는 점이다. 그 역할은 단어 일치가 아니라 전체 문장 의미로 판단한다.
 
 ### 테스트가 버그를 박제하고 있었다
 
 `test_rag_request_adds_profile_and_vlm_filter_candidates`가 질의
 `"이 상의와 어울리는 바지 추천해줘"`에 대해 `filters["category"] == "top"`을 **기대**하고 있었다.
-구현을 그대로 옮겨 적은 테스트라 버그를 통과시켰다. `"category" not in filters`로 고쳤다.
+구현을 그대로 옮겨 적은 테스트라 버그를 통과시켰다. 지금은 후보 카테고리가
+`"바지"`이고 참고 상의의 색·계절은 필터에 없는지 검증한다.
 
 > 테스트가 구현을 복사하면 회귀는 잡아도 **결함은 못 잡는다.** 단언문에 "사용자가 원한 것"이
 > 아니라 "코드가 하는 것"이 적혀 있으면 의심한다.

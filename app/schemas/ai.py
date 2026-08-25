@@ -26,11 +26,21 @@ class IntentClassification(BaseModel):
 
 
 class QueryRefinement(BaseModel):
-    """Standalone search query produced from text, history, and VLM metadata."""
+    """Structured search intent produced from text, history, and VLM metadata."""
 
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1)
+    request_mode: Literal["direct", "coordination", "similarity"]
+    target_category: Literal[
+        "상의",
+        "바지",
+        "아우터",
+        "신발",
+        "가방",
+        "모자",
+        "원피스/스커트",
+    ] | None
 
     @field_validator("query")
     @classmethod
@@ -110,6 +120,10 @@ class RAGRequest(BaseModel):
     vlm_items: list[dict] = Field(default_factory=list)
     closet_items: list[dict] = Field(default_factory=list)
     use_closet_style: bool = True
+    # True only for vague, reference-free requests whose retrieval needs taste
+    # keywords. Personalization otherwise belongs to the ranker.
+    use_preference_search: bool = False
+    request_mode: Literal["direct", "coordination", "similarity"] = "direct"
     filters: dict = Field(default_factory=dict)
     top_k: int = DEFAULT_RAG_TOP_K
 

@@ -16,13 +16,22 @@ from app.schemas.ai import (
     VLMResponse,
 )
 from app.schemas.recommendation import AgentResponse
+from app.services.catalog_matching import (
+    infer_query_intents,
+    is_vague_search_request,
+    split_tokens,
+)
 from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
-from app.services.target_category import query_names_a_category
 from app.services.vlm_service import VlmService
 
 
 logger = logging.getLogger(__name__)
+
+# 개인화는 이 단계에서 한 번만 적용하며 각 신호의 최대 영향력을 고정한다.
+PREFERRED_STYLE_MAX_BONUS = 0.15
+CLOSET_COMPATIBILITY_MAX_BONUS = 0.20
+REFERENCE_COMPATIBILITY_MAX_BONUS = 0.20
 
 
 def build_error(code: str, message: str, retryable: bool, source: str) -> dict[str, Any]:
@@ -36,7 +45,10 @@ def _term(value: Any) -> str:
 
 def _terms_from_item(item: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
     # Normalize metadata values once so ranking comparisons stay simple.
-    return {_term(item.get(key)) for key in keys if _term(item.get(key))}
+    terms: set[str] = set()
+    for key in keys:
+        terms.update(split_tokens(item.get(key)))
+    return terms
 
 
 def _item_ref(item: dict[str, Any]) -> str | None:
@@ -235,18 +247,19 @@ class AgentNodes:
     async def query_refiner_node(self, state: AgentState) -> AgentState:
         if state.get("error"):
             return state
-        # refine_query exists to fold prior turns and VLM context into a
-        # standalone search string. With neither, the original query already is.
-        if not state.get("chat_history") and not state.get("vlm_items"):
-            state["resolved_query"] = str(state["query"]).strip()
-            return state
+        # Every fashion request needs structured retrieval intent. Even a first
+        # text-only turn can describe coordination/similarity or name a target
+        # category that downstream retrieval must preserve.
         try:
-            refined_query = await self.llm_service.refine_query(
+            raw_refinement = await self.llm_service.refine_query(
                 query=state["query"],
                 chat_history=state.get("chat_history", []),
                 vlm_items=state.get("vlm_items", []),
             )
-            state["resolved_query"] = QueryRefinement(query=refined_query).query
+            refinement = QueryRefinement.model_validate(raw_refinement)
+            state["resolved_query"] = refinement.query
+            state["request_mode"] = refinement.request_mode
+            state["target_category"] = refinement.target_category
         except ValidationError:
             state["error"] = build_error(
                 "QUERY_REFINEMENT_INVALID_RESPONSE",
@@ -357,15 +370,30 @@ class AgentNodes:
         vlm_items = state.get("vlm_items") or []
         user_profile = state.get("user_profile") or {}
         query = state.get("resolved_query") or state["query"]
-        # 정제된 질의와 원본 둘 다 본다. 정제 과정에서 "상의" 같은 단어가
-        # 사라졌더라도 사용자가 처음 요구한 카테고리는 존중해야 한다.
+        request_mode = state.get("request_mode", "direct")
         filters = self._build_rag_filters(
-            context, user_profile, vlm_items, query=f"{state['query']} {query}"
+            context,
+            user_profile,
+            vlm_items,
+            request_mode=request_mode,
+            target_category=state.get("target_category"),
         )
         if state.get("candidate_scope") == "unseen":
             excluded_refs = state.get("previous_shown_item_refs", [])
             if excluded_refs:
                 filters["excluded_item_refs"] = excluded_refs
+
+        preferred_styles = user_profile.get("preferred_styles") or []
+        use_preference_search = bool(
+            state.get("use_closet_style", True)
+            and preferred_styles
+            and is_vague_search_request(
+                query,
+                request_mode=request_mode,
+                has_reference_items=bool(vlm_items),
+                filters=filters,
+            )
+        )
 
         request = RAGRequest(
             user_id=state["user_id"],
@@ -375,6 +403,8 @@ class AgentNodes:
             vlm_items=vlm_items,
             closet_items=state.get("closet_items") or [],
             use_closet_style=state.get("use_closet_style", True),
+            use_preference_search=use_preference_search,
+            request_mode=request_mode,
             filters=filters,
             top_k=int(context.get("limit") or context.get("top_k") or DEFAULT_RAG_TOP_K),
         )
@@ -387,7 +417,8 @@ class AgentNodes:
         context: dict[str, Any],
         user_profile: dict[str, Any],
         vlm_items: list[dict],
-        query: str = "",
+        request_mode: str = "direct",
+        target_category: str | None = None,
     ) -> dict:
         # Explicit context filters win over profile or image-inferred defaults.
         filters = {
@@ -408,16 +439,16 @@ class AgentNodes:
             if key in context:
                 filters[key] = context[key]
 
-        preferred_styles = user_profile.get("preferred_styles") or []
-        if preferred_styles and "preferred_styles" not in filters:
-            filters["preferred_styles"] = preferred_styles
-
         inferred = self._inferred_vlm_filters(vlm_items)
-        # 질의가 찾는 옷을 말했다면 사진에서 읽은 카테고리는 쓰지 않는다.
-        # "이 바지에 어울리는 상의"에서 VLM의 category는 바지고, 그대로 넣으면
-        # 후보가 바지로 고정돼 상의를 영영 찾지 못한다.
-        # 호출부가 명시한 context의 category는 그대로 존중한다.
-        if query_names_a_category(query):
+        if target_category and "category" not in filters:
+            filters["category"] = target_category
+
+        if request_mode == "coordination":
+            # Query Refiner has classified the image as reference context. None of
+            # its inferred attributes become candidate hard filters.
+            inferred = {}
+        elif target_category:
+            # The LLM's candidate category wins over the photographed category.
             inferred.pop("category", None)
 
         for key, value in inferred.items():
@@ -563,6 +594,12 @@ class AgentNodes:
         if state is None:
             return score
 
+        score += self._reference_compatibility_bonus(
+            item,
+            state.get("vlm_items") or [],
+            state.get("request_mode", "direct"),
+        )
+
         # Closet-style mode favors user taste and owned-item compatibility.
         if state.get("use_closet_style", True):
             score += self._preferred_style_bonus(item, state.get("user_profile") or {})
@@ -579,28 +616,94 @@ class AgentNodes:
         return 0.0
 
     def _preferred_style_bonus(self, item: dict[str, Any], user_profile: dict[str, Any]) -> float:
-        preferred_styles = {_term(style) for style in user_profile.get("preferred_styles", []) if _term(style)}
+        raw_styles = user_profile.get("preferred_styles", [])
+        if isinstance(raw_styles, str):
+            raw_styles = [raw_styles]
+        preferred_styles: set[str] = set()
+        for style in raw_styles:
+            normalized_moods = infer_query_intents(str(style))["mood"]
+            preferred_styles.update(normalized_moods or split_tokens(style))
         if not preferred_styles:
             return 0.0
         item_terms = _terms_from_item(item, ("mood", "pattern", "category", "label"))
-        return 0.15 * len(preferred_styles & item_terms)
+        matched_ratio = len(preferred_styles & item_terms) / len(preferred_styles)
+        return PREFERRED_STYLE_MAX_BONUS * matched_ratio
 
     def _closet_metadata_bonus(self, item: dict[str, Any], closet_items: list[dict[str, Any]]) -> float:
-        item_terms = _terms_from_item(
-            item,
-            ("color", "category", "mood", "sense_of_season", "pattern", "material", "fit"),
-        )
-        if not item_terms:
+        if not closet_items:
             return 0.0
 
-        matches = 0
-        for closet_item in closet_items:
-            closet_terms = _terms_from_item(
-                closet_item,
-                ("color", "category", "mood", "sense_of_season", "pattern", "material", "fit"),
-            )
-            matches += len(item_terms & closet_terms)
-        return min(matches * 0.05, 0.30)
+        # Field weights sum to the advertised cap. Closet values are unioned per
+        # field, so adding a duplicate item cannot increase the score.
+        weights = {
+            "color": 0.04,
+            "mood": 0.05,
+            "sense_of_season": 0.04,
+            "pattern": 0.02,
+            "material": 0.02,
+            "fit": 0.02,
+            "category": 0.01,
+        }
+        closet_terms = {
+            field: {
+                token
+                for closet_item in closet_items
+                for token in split_tokens(closet_item.get(field))
+            }
+            for field in weights
+        }
+        bonus = sum(
+            weight
+            for field, weight in weights.items()
+            if split_tokens(item.get(field)) & closet_terms[field]
+        )
+        return min(bonus, CLOSET_COMPATIBILITY_MAX_BONUS)
+
+    def _reference_compatibility_bonus(
+        self,
+        item: dict[str, Any],
+        reference_items: list[dict[str, Any]],
+        request_mode: str,
+    ) -> float:
+        if not reference_items:
+            return 0.0
+
+        # Similarity/direct searches value visual attribute overlap. Coordination
+        # omits category and gives most weight to shared mood/season coherence.
+        if request_mode == "coordination":
+            weights = {
+                "mood": 0.06,
+                "sense_of_season": 0.05,
+                "material": 0.03,
+                "pattern": 0.03,
+                "color": 0.02,
+                "fit": 0.01,
+            }
+        else:
+            weights = {
+                "category": 0.04,
+                "color": 0.04,
+                "material": 0.03,
+                "fit": 0.03,
+                "pattern": 0.02,
+                "mood": 0.02,
+                "sense_of_season": 0.02,
+            }
+
+        reference_terms = {
+            field: {
+                token
+                for reference_item in reference_items
+                for token in split_tokens(reference_item.get(field))
+            }
+            for field in weights
+        }
+        bonus = sum(
+            weight
+            for field, weight in weights.items()
+            if split_tokens(item.get(field)) & reference_terms[field]
+        )
+        return min(bonus, REFERENCE_COMPATIBILITY_MAX_BONUS)
 
     def _query_relevance_bonus(self, item: dict[str, Any], query: str) -> float:
         query_text = _term(query)

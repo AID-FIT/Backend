@@ -59,8 +59,8 @@ class LlmService:
         query: str,
         chat_history: list[dict] | None = None,
         vlm_items: list[dict] | None = None,
-    ) -> str:
-        """Create the standalone query consumed by retrieval."""
+    ) -> dict[str, Any]:
+        """Create the structured query intent consumed by retrieval."""
         result = await self._generate_structured(
             system_instruction=QUERY_REFINER_SYSTEM_PROMPT,
             prompt={
@@ -73,7 +73,7 @@ class LlmService:
             model=settings.fast_model_name,
             thinking_budget=settings.llm_fast_thinking_budget,
         )
-        return QueryRefinement.model_validate(result).query.strip()
+        return QueryRefinement.model_validate(result).model_dump()
 
     async def plan_retrieval(
         self,
@@ -346,8 +346,19 @@ class LlmService:
     def _query_refinement_schema(self) -> dict[str, Any]:
         return {
             "type": "OBJECT",
-            "properties": {"query": {"type": "STRING"}},
-            "required": ["query"],
+            "properties": {
+                "query": {"type": "STRING"},
+                "request_mode": {
+                    "type": "STRING",
+                    "enum": ["direct", "coordination", "similarity"],
+                },
+                "target_category": {
+                    "type": "STRING",
+                    "enum": ["상의", "바지", "아우터", "신발", "가방", "모자", "원피스/스커트"],
+                    "nullable": True,
+                },
+            },
+            "required": ["query", "request_mode", "target_category"],
         }
 
     def _retrieval_plan_schema(self) -> dict[str, Any]:

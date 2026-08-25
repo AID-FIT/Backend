@@ -122,7 +122,24 @@ def test_query_refinement_runs_on_the_fast_model(monkeypatch) -> None:
         FakeResponse,
         "json",
         lambda self: {
-            "candidates": [{"content": {"parts": [{"text": '{"query": "검은 바지"}'}]}}]
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "query": "검은 바지",
+                                        "request_mode": "direct",
+                                        "target_category": "바지",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
         },
     )
 
@@ -183,10 +200,10 @@ def test_final_composition_keeps_the_default_model(monkeypatch) -> None:
     assert "thinkingConfig" not in request["payload"]["generationConfig"]
 
 
-def test_query_refiner_skips_llm_without_history_or_vlm() -> None:
-    llm = FakeLlmService()
+def test_query_refiner_calls_llm_without_history_or_vlm() -> None:
+    llm = FakeLlmService(refined_query="검은 재킷과 어울리는 와이드 바지")
     nodes = AgentNodes(llm_service=llm)
-    query = "와이드 슬랙스 바지 추천해줘"
+    query = "검은 재킷에 어울리는 바지 추천해줘"
 
     result = asyncio.run(
         nodes.query_refiner_node(
@@ -194,8 +211,15 @@ def test_query_refiner_skips_llm_without_history_or_vlm() -> None:
         )
     )
 
-    assert llm.refine_calls == []
-    assert result["resolved_query"] == query
+    assert len(llm.refine_calls) == 1
+    assert llm.refine_calls[0] == {
+        "query": query,
+        "chat_history": [],
+        "vlm_items": [],
+    }
+    assert result["resolved_query"] == "검은 재킷과 어울리는 와이드 바지"
+    assert result["request_mode"] == "coordination"
+    assert result["target_category"] == "바지"
 
 
 def test_query_refiner_calls_llm_when_history_exists() -> None:
@@ -237,6 +261,8 @@ def test_query_refiner_calls_llm_when_vlm_items_exist() -> None:
     assert len(llm.refine_calls) == 1
     assert llm.refine_calls[0]["vlm_items"][0]["material"] == "knit"
     assert result["resolved_query"] == "화이트 니트에 어울리는 블랙 와이드 팬츠"
+    assert result["request_mode"] == "coordination"
+    assert result["target_category"] == "바지"
 
 
 class RecordingLlmService(LlmService):

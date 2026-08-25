@@ -13,6 +13,7 @@ from app.services.catalog_matching import (
     expand_query,
     final_score,
     infer_query_intents,
+    is_vague_search_request,
     metadata_score,
 )
 
@@ -59,33 +60,54 @@ def test_filters_count_as_intents() -> None:
     assert intents["season"] == {"winter"}
 
 
-def test_search_text_carries_the_closet_and_taste() -> None:
+def test_vague_search_text_uses_taste_only_when_explicitly_enabled() -> None:
     text = build_search_text(
         "오늘 뭐 입지",
-        closet_items=[{"color": "charcoal", "mood": "minimal"}],
         preferred_styles=["스트릿"],
+        use_preference_search=True,
     )
 
-    assert "charcoal" in text
-    assert "minimal" in text
     assert "스트릿" in text
 
 
-def test_search_text_drops_the_closet_when_it_is_turned_off() -> None:
+def test_specific_search_text_does_not_mix_in_taste_by_default() -> None:
     text = build_search_text(
-        "오늘 뭐 입지",
-        closet_items=[{"color": "charcoal"}],
-        use_closet_style=False,
+        "흰색 셔츠 추천해줘",
+        preferred_styles=["검정", "스트릿"],
     )
 
-    assert "charcoal" not in text
+    assert "black" not in text
+    assert "스트릿" not in text
+
+
+def test_only_context_free_requests_are_vague() -> None:
+    assert is_vague_search_request("오늘 뭐 입지") is True
+    assert is_vague_search_request("나한테 어울리는 거 추천해줘") is True
+    assert is_vague_search_request("흰색 셔츠 추천해줘") is False
+    assert is_vague_search_request("비 오는 날 입을 옷 추천해줘") is False
+
+
+def test_reference_or_explicit_filter_disables_preference_search() -> None:
+    assert is_vague_search_request("추천해줘", has_reference_items=True) is False
+    assert is_vague_search_request("추천해줘", filters={"category": "상의"}) is False
+
+
+def test_coordination_search_text_does_not_append_raw_reference_attributes() -> None:
+    text = build_search_text(
+        "검은 데님 바지와 어울리는 상의",
+        vlm_items=[{"category": "바지", "color": "black", "material": "corduroy"}],
+        request_mode="coordination",
+    )
+
+    assert "검은 데님 바지와 어울리는 상의" in text
+    assert "corduroy" not in text
 
 
 def test_search_text_stays_short_enough_to_embed() -> None:
     # 질의가 길어지면 뒤쪽 토큰이 임베딩에서 묻힌다.
     text = build_search_text(
         "검정",
-        closet_items=[{"color": "black " * 200}],
+        vlm_items=[{"color": "black " * 200}],
     )
 
     assert len(text.split()) <= 120
@@ -135,24 +157,8 @@ def test_the_score_never_leaves_zero_to_one() -> None:
     assert 0.0 <= everything <= 1.0
 
 
-def test_preferred_styles_lift_a_product_in_that_mood() -> None:
-    with_taste = metadata_score(
-        item(), infer_query_intents("추천해줘"), preferred_styles=["street"]
-    )
-    without_taste = metadata_score(item(), infer_query_intents("추천해줘"))
-
-    assert with_taste > without_taste
-
-
-def test_owning_similar_clothes_lifts_a_product() -> None:
-    with_closet = metadata_score(
-        item(),
-        infer_query_intents("추천해줘"),
-        closet_items=[{"color": "black", "mood": "street"}],
-    )
-    without_closet = metadata_score(item(), infer_query_intents("추천해줘"))
-
-    assert with_closet > without_closet
+def test_metadata_score_contains_no_personalization_for_a_generic_query() -> None:
+    assert metadata_score(item(), infer_query_intents("추천해줘")) == 0.0
 
 
 def test_similarity_still_carries_most_of_the_weight() -> None:

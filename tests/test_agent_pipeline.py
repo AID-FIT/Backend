@@ -97,12 +97,13 @@ class FakeLlmService:
         query: str,
         chat_history: list[dict] | None = None,
         vlm_items: list[dict] | None = None,
-    ) -> str:
+    ) -> dict:
         call = {"query": query, "chat_history": chat_history or [], "vlm_items": vlm_items or []}
         self.refine_calls.append(call)
+        refinement = await self.mock_llm.refine_query(**call)
         if self.refined_query is not None:
-            return self.refined_query
-        return await self.mock_llm.refine_query(**call)
+            return {**refinement, "query": self.refined_query}
+        return refinement
 
     async def plan_retrieval(self, **kwargs) -> dict:
         self.plan_calls.append(kwargs)
@@ -214,14 +215,16 @@ def build_pipeline(
     return AidFitAgentPipeline(AgentNodes(vlm, rag, llm)), vlm, rag, llm
 
 
-def test_text_only_skips_vlm_and_routes_to_musinsa() -> None:
+def test_first_text_only_turn_runs_refiner_skips_vlm_and_routes_to_musinsa() -> None:
     pipeline, vlm, rag, llm = build_pipeline()
 
     result = asyncio.run(pipeline.run(query="화이트 니트랑 어울리는 바지 추천해줘", user_id="user_001"))
 
     assert result["status"] == "success"
     assert vlm.calls == []
-    assert llm.refine_calls == []
+    assert len(llm.refine_calls) == 1
+    assert llm.refine_calls[0]["chat_history"] == []
+    assert llm.refine_calls[0]["vlm_items"] == []
     assert rag.calls[0]["query"] == "화이트 니트랑 어울리는 바지 추천해줘"
     assert rag.calls[0]["retrieval_target"] == "musinsa"
     assert "vlm_items" in rag.calls[0]
@@ -376,7 +379,7 @@ def test_non_fashion_image_stops_before_rag() -> None:
     assert rag.calls == []
 
 
-def test_rag_request_adds_profile_and_vlm_filter_candidates() -> None:
+def test_coordination_request_keeps_reference_attributes_out_of_candidate_filters() -> None:
     pipeline, _, rag, _ = build_pipeline()
 
     asyncio.run(
@@ -389,12 +392,68 @@ def test_rag_request_adds_profile_and_vlm_filter_candidates() -> None:
     )
 
     filters = rag.calls[0]["filters"]
-    assert filters["preferred_styles"] == ["minimal", "casual"]
-    assert filters["sense_of_season"] == "spring"
-    assert filters["color"] == "white"
-    # 사진 속 옷(상의)의 카테고리는 필터로 쓰지 않는다. 사용자가 찾는 건 바지다.
-    # 그대로 넣으면 후보가 상의로 고정돼 바지를 영영 찾지 못한다.
+    assert "preferred_styles" not in filters
+    assert "sense_of_season" not in filters
+    assert "color" not in filters
+    # 사진 속 상의가 아니라 사용자가 찾는 바지를 후보 카테고리로 고정한다.
+    assert filters["category"] == "바지"
+    assert rag.calls[0]["request_mode"] == "coordination"
+    assert rag.calls[0]["use_preference_search"] is False
+
+
+def test_coordination_without_a_target_category_keeps_candidates_broad() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(
+        pipeline.run(
+            query="이 옷과 어울리는 옷 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/item_001.jpg"],
+        )
+    )
+
+    filters = rag.calls[0]["filters"]
     assert "category" not in filters
+    assert "color" not in filters
+    assert "sense_of_season" not in filters
+    assert rag.calls[0]["request_mode"] == "coordination"
+
+
+def test_coordination_evaluation_does_not_turn_refined_vlm_category_into_target() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(
+        pipeline.run(
+            query="이 옷과 어울리는 옷을 평가해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/item_001.jpg"],
+        )
+    )
+
+    # Reference attributes must not come back as candidate constraints.
+    filters = rag.calls[0]["filters"]
+    assert "category" not in filters
+    assert "color" not in filters
+    assert "sense_of_season" not in filters
+    assert rag.calls[0]["request_mode"] == "coordination"
+
+
+def test_similar_item_request_keeps_reference_color_and_category_filters() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(
+        pipeline.run(
+            query="이 사진과 비슷한 상품 추천해줘",
+            user_id="user_001",
+            image_urls=["https://cdn.aidfit.com/item_001.jpg"],
+        )
+    )
+
+    filters = rag.calls[0]["filters"]
+    assert filters["category"] == "상의"
+    assert filters["color"] == "white"
+    assert filters["sense_of_season"] == "spring"
+    assert rag.calls[0]["request_mode"] == "similarity"
 
 
 def test_rag_request_fetches_thirty_candidates_by_default() -> None:
@@ -403,6 +462,34 @@ def test_rag_request_fetches_thirty_candidates_by_default() -> None:
     asyncio.run(pipeline.run(query="가을 옷 추천해줘", user_id="user_001"))
 
     assert rag.calls[0]["top_k"] == 30
+
+
+def test_vague_request_uses_profile_taste_as_search_fallback() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(
+        pipeline.run(
+            query="옷 추천해줘",
+            user_id="user_001",
+            user_profile={"preferred_styles": ["minimal"]},
+        )
+    )
+
+    assert rag.calls[0]["use_preference_search"] is True
+
+
+def test_specific_request_keeps_profile_taste_out_of_search() -> None:
+    pipeline, _, rag, _ = build_pipeline()
+
+    asyncio.run(
+        pipeline.run(
+            query="흰색 셔츠 추천해줘",
+            user_id="user_001",
+            user_profile={"preferred_styles": ["street"]},
+        )
+    )
+
+    assert rag.calls[0]["use_preference_search"] is False
 
 
 def test_context_filters_override_inferred_vlm_filters() -> None:
@@ -422,7 +509,7 @@ def test_context_filters_override_inferred_vlm_filters() -> None:
     assert filters["category"] == "pants"
     assert filters["color"] == "blue"
     assert filters["preferred_styles"] == ["street"]
-    assert filters["sense_of_season"] == "spring"
+    assert "sense_of_season" not in filters
 
 
 def test_ranking_prefers_user_profile_mood_when_base_scores_match() -> None:
@@ -469,6 +556,32 @@ def test_ranking_boosts_closet_metadata_matches() -> None:
     assert llm.calls[0]["ranked_items"][0]["item_id"] == "black_summer"
     assert llm.calls[0]["closet_items"][0]["closet_item_id"] == "closet_001"
     assert llm.calls[0]["use_closet_style"] is True
+
+
+def test_duplicate_closet_items_do_not_multiply_the_ranker_bonus() -> None:
+    nodes = AgentNodes()
+    candidate = fake_item("candidate", color="black", mood="street", sense_of_season="summer")
+    closet_item = {"color": "black", "mood": "street", "sense_of_season": "summer"}
+
+    once = nodes._closet_metadata_bonus(candidate, [closet_item])
+    repeated = nodes._closet_metadata_bonus(candidate, [closet_item] * 20)
+
+    assert repeated == once
+    assert repeated <= 0.20
+
+
+def test_photo_compatibility_is_applied_in_the_ranker() -> None:
+    nodes = AgentNodes()
+    state = {
+        "use_closet_style": False,
+        "request_mode": "coordination",
+        "vlm_items": [{"mood": "street", "sense_of_season": "summer"}],
+        "query": "이 옷과 어울리는 상의",
+    }
+    compatible = fake_item("compatible", final_score=0.5, mood="street", sense_of_season="summer")
+    unrelated = fake_item("unrelated", final_score=0.5, mood="formal", sense_of_season="winter")
+
+    assert nodes._ranking_score(compatible, state) > nodes._ranking_score(unrelated, state)
 
 
 def test_use_closet_style_false_ignores_user_profile_boost() -> None:
@@ -571,7 +684,8 @@ def outfit_vlm_response(*items: dict) -> dict:
 
 
 def test_outfit_photo_does_not_narrow_filters_to_one_garment() -> None:
-    # A full-body photo has no single category or color, so neither may filter retrieval.
+    # A full-body photo has no single category or color. Only the user's explicit
+    # target category (가방), never one of the photographed garments, may filter.
     vlm_response = outfit_vlm_response(
         {"category": "아우터", "color": "blue", "sense_of_season": "fall"},
         {"category": "바지", "color": "black", "sense_of_season": "summer"},
@@ -588,7 +702,7 @@ def test_outfit_photo_does_not_narrow_filters_to_one_garment() -> None:
     )
 
     filters = rag.calls[0]["filters"]
-    assert "category" not in filters
+    assert filters["category"] == "가방"
     assert "color" not in filters
     # Seasons disagree here, so no season filter either.
     assert "sense_of_season" not in filters
@@ -951,7 +1065,9 @@ def test_two_turn_mock_flow_serves_disjoint_products_without_second_rag_call() -
     assert second["rag_reused"] is True
     assert first_ids.isdisjoint(second_ids)
     assert second["candidate_pool"] == first["candidate_pool"]
-def test_outfit_photo_keeps_a_unanimous_season_filter() -> None:
+
+
+def test_coordination_photo_does_not_create_a_season_filter() -> None:
     vlm_response = outfit_vlm_response(
         {"category": "아우터", "color": "blue", "sense_of_season": "fall"},
         {"category": "바지", "color": "black", "sense_of_season": "fall"},
@@ -966,10 +1082,10 @@ def test_outfit_photo_keeps_a_unanimous_season_filter() -> None:
         )
     )
 
-    assert rag.calls[0]["filters"]["sense_of_season"] == "fall"
+    assert "sense_of_season" not in rag.calls[0]["filters"]
 
 
-def test_outfit_items_all_reach_the_rag_query_and_llm() -> None:
+def test_outfit_items_reach_rag_context_and_final_llm_without_query_duplication() -> None:
     vlm_response = outfit_vlm_response(
         {"category": "아우터", "color": "blue", "material": "denim"},
         {"category": "바지", "color": "black", "material": "corduroy"},
@@ -985,7 +1101,8 @@ def test_outfit_items_all_reach_the_rag_query_and_llm() -> None:
     )
 
     rag_query = rag.calls[0]["query"]
-    assert "denim" in rag_query and "corduroy" in rag_query
+    assert "denim" not in rag_query and "corduroy" not in rag_query
+    assert len(rag.calls[0]["vlm_items"]) == 2
     assert len(llm.calls[0]["vlm_items"]) == 2
 
 

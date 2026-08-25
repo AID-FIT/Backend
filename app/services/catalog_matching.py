@@ -8,11 +8,11 @@ ChromaDB 구현(`rag_service_final.py`)에 있던 것을 저장소와 무관한 
 여기에는 chromadb도 DB 세션도 들어오지 않는다. 저장소를 또 갈아끼워도
 이 계층은 따라와야 하기 때문이다.
 
-주의: `rag_service_final.py`에도 같은 표가 남아 있다. 그 파일은 chromadb를
-import해 이 환경에서 테스트가 스킵되므로 손대지 않았다. static 경로를
+주의: `rag_service_final.py`에도 같은 표와 점수 로직이 남아 있다. static 경로를
 걷어낼 때 그쪽이 이 모듈을 import하도록 바꾼다.
 """
 
+import re
 from typing import Any
 
 # 최종 순위 = 벡터 유사도 × 0.75 + 메타데이터 일치 × 0.25.
@@ -326,6 +326,22 @@ ITEM_TYPE_VALUES = {
 
 CATEGORY_VALUES = set(CATEGORY_ALIASES.values())
 
+# refresh_seed 같은 검색 제어값은 요청의 구체성을 판단하는 근거가 아니다.
+# preferred_styles도 프로필에서 자동 복사하지 않고, context에 명시됐을 때만 본다.
+EXPLICIT_SEARCH_FILTERS = {
+    "price_min",
+    "price_max",
+    "season",
+    "style",
+    "preferred_styles",
+    "sense_of_season",
+    "category",
+    "item_type",
+    "color",
+    "mood",
+    "gender",
+}
+
 
 # --- 값 정규화 ---
 
@@ -455,38 +471,81 @@ def infer_query_intents(query: str, filters: dict[str, Any] | None = None) -> di
     return intents
 
 
+def is_vague_search_request(
+    query: str,
+    *,
+    request_mode: str = "direct",
+    has_reference_items: bool = False,
+    filters: dict[str, Any] | None = None,
+) -> bool:
+    """취향으로 검색어를 보완해야 할 만큼 요청이 모호한지 판정한다.
+
+    취향 검색은 명시적으로 허용한 좁은 fallback이다. 사진, 상품 속성, 필터가
+    하나라도 있으면 그 의미를 보존하고, ``오늘 뭐 입지``처럼 검색 기준이 없는
+    일반 추천에서만 프로필 취향을 임베딩에 더한다.
+    """
+    if request_mode != "direct" or has_reference_items:
+        return False
+
+    filters = filters or {}
+    if any(clean_value(filters.get(key)) is not None for key in EXPLICIT_SEARCH_FILTERS):
+        return False
+
+    if any(infer_query_intents(query).values()):
+        return False
+
+    compact = re.sub(r"[^0-9a-zA-Z가-힣]+", "", query).casefold()
+    if not compact:
+        return True
+
+    korean_patterns = (
+        r"(?:오늘)?(?:뭐|무엇)(?:을|를)?(?:입지|입을까|입으면좋을까|입어야할까)",
+        r"(?:나|저)(?:한테|에게)어울리는(?:옷|거|것)?(?:좀)?(?:추천|추천해줘|추천해주세요|골라줘)?",
+        r"(?:오늘의?|데일리)?(?:옷|의류|상품|코디)?(?:좀)?(?:추천|추천해줘|추천해주세요|골라줘)",
+        r"아무거나(?:좀)?(?:추천|추천해줘|추천해주세요|골라줘)",
+    )
+    if any(re.fullmatch(pattern, compact) for pattern in korean_patterns):
+        return True
+
+    return compact in {
+        "whatshouldiwear",
+        "recommendmeoutfit",
+        "recommendsomething",
+        "outfitrecommendation",
+    }
+
+
 # --- 임베딩에 넣을 문장 ---
 
 
 def build_search_text(
     query: str,
     vlm_items: list[dict] | None = None,
-    closet_items: list[dict] | None = None,
-    use_closet_style: bool = True,
     preferred_styles: list[str] | str | None = None,
+    use_preference_search: bool = False,
+    request_mode: str = "direct",
 ) -> str:
     """벡터 검색에 실제로 임베딩할 문장.
 
-    질의만 임베딩하면 옷장과 취향이 검색에 전혀 반영되지 않는다. 그 신호는
-    필터로 만들 수 있는 값도 아니라서(색·핏·무드는 다중값 문자열이다) 질의
-    텍스트에 실어야 임베딩이 잡는다.
+    기본 검색 의미는 사용자 요청과 사진 참고 정보만 만든다. 옷장 정보는 이
+    단계에 넣지 않고 ranker에서만 사용한다. 취향 역시 호출부가 모호한 일반
+    추천으로 판정해 ``use_preference_search``를 켠 경우에만 보완 신호로 쓴다.
     """
     parts = [expand_query(query)]
 
-    for item in (vlm_items or [])[:3]:
-        text_value = style_text(item)
-        if text_value:
-            parts.append(text_value)
-
-    if use_closet_style:
-        for item in (closet_items or [])[:5]:
+    # In coordination mode the Query Refiner has already produced a candidate-
+    # focused query. Appending raw reference attributes again would make the
+    # embedding search for the same color/category instead of a complementary item.
+    if request_mode != "coordination":
+        for item in (vlm_items or [])[:3]:
             text_value = style_text(item)
             if text_value:
                 parts.append(text_value)
 
-    if isinstance(preferred_styles, str):
-        preferred_styles = [preferred_styles]
-    parts.extend(str(style) for style in (preferred_styles or []) if clean_value(style))
+    if use_preference_search:
+        if isinstance(preferred_styles, str):
+            preferred_styles = [preferred_styles]
+        parts.extend(str(style) for style in (preferred_styles or []) if clean_value(style))
 
     return limit_words(" ".join(parts))
 
@@ -498,9 +557,6 @@ def metadata_score(
     item: dict[str, Any],
     intents: dict[str, set[str]],
     filters: dict[str, Any] | None = None,
-    closet_items: list[dict] | None = None,
-    use_closet_style: bool = True,
-    preferred_styles: list[str] | str | None = None,
 ) -> float:
     """질의 의도와 상품 메타데이터가 얼마나 맞는지. 0~1.
 
@@ -539,24 +595,6 @@ def metadata_score(
     moods = split_tokens(item.get("mood"))
     if moods & intents["mood"]:
         score += 0.10
-
-    if isinstance(preferred_styles, str):
-        preferred_styles = [preferred_styles]
-    preferred_tokens = {
-        str(style).lower() for style in (preferred_styles or []) if clean_value(style)
-    }
-    if moods & preferred_tokens:
-        score += 0.10
-
-    if use_closet_style and closet_items:
-        closet_matches = 0
-        for closet_item in closet_items[:5]:
-            for field in ("color", "fit", "pattern", "mood"):
-                if split_tokens(item.get(field)) & split_tokens(closet_item.get(field)):
-                    closet_matches += 1
-                    break
-        if closet_matches:
-            score += min(0.10, closet_matches * 0.03)
 
     return clamp_score(score)
 

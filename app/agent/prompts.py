@@ -30,11 +30,27 @@ Return only the requested JSON object.
 
 
 QUERY_REFINER_SYSTEM_PROMPT = """
-You rewrite an AID-FIT fashion request into one concise, standalone retrieval query.
-Resolve references in the current message using only relevant recent conversation. Merge
-useful VLM garment attributes from attached images. Preserve explicit constraints such as
-budget, category, color, occasion, season, source, and exclusions. Do not invent facts and
-do not answer the request. Return only the requested JSON object in Korean when possible.
+You convert an AID-FIT fashion request into structured retrieval intent.
+
+Return request_mode as exactly one of:
+- direct: ordinary product discovery without using an attached garment as a reference.
+- coordination: find a different item that complements the attached/reference garment or outfit.
+- similarity: find an item similar to the attached/reference garment.
+
+Write query as one concise, standalone, candidate-focused retrieval query. Resolve references
+using only relevant recent conversation and the supplied VLM items. For coordination, describe
+the relevant reference garment and the desired candidate as a relationship, for example
+"검은색 와이드 데님 팬츠와 어울리는 캐주얼 상의". VLM attributes describe the reference;
+do not rewrite them as required candidate attributes. Preserve constraints explicitly stated by
+the user, but do not invent facts.
+
+Set target_category to the category of the candidate the user wants, using exactly one of 상의,
+바지, 아우터, 신발, 가방, 모자, 원피스/스커트, or null when the target is open-ended. For
+coordination, never use the reference garment's category as target_category merely because it
+appears in VLM items.
+
+Do not return filters. Do not answer the request. Return only the requested JSON object in Korean
+when possible.
 """
 
 

@@ -105,12 +105,12 @@ class RagService:
                 excluded_item_refs=excluded,
                 # 벡터 검색은 결정적이라 seed가 없으면 새로고침해도 같은 목록이 나온다.
                 refresh_seed=int(request.filters.get("refresh_seed") or 0),
-                # 옷장·사진·취향은 필터로 만들 수 없는 신호다. 질의 텍스트에
-                # 실어야 임베딩이 잡고, 메타데이터 점수에도 쓰인다.
+                # 사진은 검색 문맥, 옷장과 기본 취향은 후단 ranker 문맥이다.
+                # 모호한 일반 추천만 취향 키워드를 검색에 보완한다.
                 vlm_items=request.vlm_items,
-                closet_items=request.closet_items,
-                use_closet_style=request.use_closet_style,
+                request_mode=request.request_mode,
                 preferred_styles=(request.user_profile or {}).get("preferred_styles"),
+                use_preference_search=request.use_preference_search,
             )
 
     def _search_closet(

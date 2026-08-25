@@ -13,6 +13,7 @@ from typing import Any
 
 from app.schemas.ai import RAGRequest, VLMResponse
 from app.services import llm_service as llm_module
+from app.services.catalog_matching import normalize_category
 from app.services.llm_service import (
     MAX_RECOMMENDATIONS,
     LlmService,
@@ -20,6 +21,7 @@ from app.services.llm_service import (
     build_rag_query,
 )
 from app.services.rag_service import RagService
+from app.services.target_category import infer_target_category
 from app.services.vlm_service import VlmService
 
 
@@ -138,10 +140,32 @@ class DeterministicLlmService(LlmService):
         query: str,
         chat_history: list[dict],
         vlm_items: list[dict],
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         conversation_query = build_conversation_query(chat_history, query)
-        refined = build_rag_query({"items": vlm_items}, conversation_query)
-        return {"query": refined or str(query).strip()}
+        lowered = str(query or "").lower()
+        if any(term in lowered for term in ("비슷", "유사", "닮은", "같은 상품")):
+            request_mode = "similarity"
+        elif any(term in lowered for term in ("어울", "코디", "매치", "같이 입", "함께 입")):
+            request_mode = "coordination"
+        else:
+            request_mode = "direct"
+
+        target_category = infer_target_category(str(query or ""))
+        if request_mode == "similarity" and target_category is None and len(vlm_items) == 1:
+            target_category = normalize_category(vlm_items[0].get("category"))
+
+        # Coordination queries are candidate-focused. Raw VLM terms are reference
+        # metadata and deliberately do not get appended to the retrieval query.
+        refined = (
+            conversation_query
+            if request_mode == "coordination"
+            else build_rag_query({"items": vlm_items}, conversation_query)
+        )
+        return {
+            "query": refined or str(query).strip(),
+            "request_mode": request_mode,
+            "target_category": target_category,
+        }
 
     def _mock_plan_retrieval(
         self,
@@ -573,4 +597,3 @@ class DeterministicVlmService(VlmService):
             "sense_of_season": "spring",
             "is_fashion_item": is_fashion_item,
         }
-
