@@ -8,6 +8,7 @@ import pytest
 from app.agent.nodes import AgentNodes
 from app.services import vlm_service as vlm_module
 from app.services.vlm_service import VlmService
+from tests.fake_ai import DeterministicVlmService
 
 
 # Attributes as the model returns them, without the per-item verdict.
@@ -153,12 +154,12 @@ def setup(monkeypatch, **overrides) -> None:
 
 def analyze(image_urls: list[str]) -> dict:
     # Recommendation path: one image may describe a whole outfit.
-    return asyncio.run(VlmService(use_mock_ai=False).analyze_many(image_urls))
+    return asyncio.run(VlmService().analyze_many(image_urls))
 
 
 def analyze_single(image_url) -> dict:
     # Closet path: one photo is one garment.
-    return asyncio.run(VlmService(use_mock_ai=False).analyze(image_url))
+    return asyncio.run(VlmService().analyze(image_url))
 
 
 # ---------------------------------------------------------------------------
@@ -624,14 +625,14 @@ def test_single_analyze_without_image_skips_the_network(monkeypatch) -> None:
 
     result = analyze_single(None)
 
-    assert result == {"thumbnail_url": "mock://no-image", "is_fashion_item": True}
+    assert result == {"thumbnail_url": "", "is_fashion_item": True}
     assert FakeAsyncClient.get_calls == []
 
 
 def test_mock_mode_never_touches_the_network(monkeypatch) -> None:
     setup(monkeypatch)
 
-    response = asyncio.run(VlmService(use_mock_ai=True).analyze_many(["https://cdn.aidfit.com/item_001.jpg"]))
+    response = asyncio.run(DeterministicVlmService().analyze_many(["https://cdn.aidfit.com/item_001.jpg"]))
 
     assert response["items"][0]["color"] == "white"
     assert FakeAsyncClient.get_calls == []
@@ -653,7 +654,7 @@ def test_agent_call_vlm_accepts_a_multi_item_response(monkeypatch) -> None:
             {**FASHION_ATTRS, "category": "바지"},
         ),
     )
-    nodes = AgentNodes(vlm_service=VlmService(use_mock_ai=False))
+    nodes = AgentNodes(vlm_service=VlmService())
 
     response = asyncio.run(nodes.call_vlm([url]))
 
@@ -663,7 +664,7 @@ def test_agent_call_vlm_accepts_a_multi_item_response(monkeypatch) -> None:
 
 def test_agent_vlm_node_reports_failures_as_contract_errors(monkeypatch) -> None:
     setup(monkeypatch)
-    nodes = AgentNodes(vlm_service=VlmService(use_mock_ai=False))
+    nodes = AgentNodes(vlm_service=VlmService())
     state = {"image_urls": ["mock://no-image"], "has_image": True}
 
     result = asyncio.run(nodes.vlm_node(state))

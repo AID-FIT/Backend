@@ -26,7 +26,6 @@ class Settings(BaseSettings):
         default="http://localhost:8081,http://localhost:19006,http://localhost:3000",
         alias="CORS_ORIGINS",
     )
-    use_mock_ai: bool = True
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"

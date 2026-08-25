@@ -53,15 +53,8 @@ async def main() -> None:
         action="store_true",
         help="Ignore the existing closet style when ranking.",
     )
-    parser.add_argument("--mock", action="store_true", help="Force mock AI services.")
     parser.add_argument("--json", action="store_true", help="Print the raw response JSON only.")
     args = parser.parse_args()
-
-    if args.mock:
-        # Mock mode is read from settings at service construction time.
-        from app.core import config
-
-        config.settings.use_mock_ai = True
 
     image_urls, server = resolve_inputs(list(args.images))
     if server is not None:

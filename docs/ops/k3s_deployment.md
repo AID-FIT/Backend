@@ -78,7 +78,6 @@ CORS_ORIGINS=http://localhost:8081,http://localhost:19006,http://devse.kr:12571
 GOOGLE_CLIENT_IDS=
 APPLE_CLIENT_IDS=
 AUTH_ALLOW_UNVERIFIED_TOKENS=false
-USE_MOCK_AI=true
 RAG_VECTOR_DB_PATH=/app/data/chromadb_final
 RAG_COLLECTION_NAME=musinsa
 RAG_EMBEDDING_MODEL=jhgan/ko-sroberta-multitask
@@ -116,7 +115,6 @@ Required GitHub Secrets:
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 예: `10080` |
 | `PUBLIC_BASE_URL` | 예: `https://api.aidfit.o-r.kr` |
 | `CORS_ORIGINS` | 프론트엔드 origin 목록 |
-| `USE_MOCK_AI` | MVP는 `true` |
 | `GOOGLE_CLIENT_IDS` | Google OAuth client IDs |
 | `APPLE_CLIENT_IDS` | Apple bundle/service IDs |
 | `AUTH_ALLOW_UNVERIFIED_TOKENS` | 운영은 `false` |
@@ -142,6 +140,6 @@ K3s deployment의 image tag는 workflow에서 short SHA로 치환됩니다.
 
 - 이 프로젝트에는 아직 Alembic migration이 없으므로 backend initContainer는 `python scripts/init_db.py`를 실행합니다.
 - 나중에 Alembic을 도입하면 `k8s/backend-deployment.yaml`의 initContainer command를 `alembic upgrade head`로 교체하면 됩니다.
-- 실제 RAG를 사용할 때는 `USE_MOCK_AI=false`로 설정하기 전에 `backend-rag-pvc`를 시드해야 합니다.
+- 정적 카탈로그 경로를 쓸 때는 `backend-rag-pvc`를 먼저 시드해야 합니다.
 - Sentence Transformer와 Chroma 인덱스를 함께 로드하므로 backend는 메모리 요청 `1Gi`, 제한 `2Gi`로 구성되어 있습니다.
 - PostgreSQL 및 backend PVC 삭제는 데이터 삭제입니다. `scripts/k3s/delete.sh`는 PVC와 namespace를 지우지 않습니다.

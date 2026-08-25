@@ -23,9 +23,6 @@ MAX_PREVIOUS_RAG_CANDIDATES = 20
 
 
 class LlmService:
-    def __init__(self, use_mock_ai: bool | None = None) -> None:
-        self.use_mock_ai = settings.use_mock_ai if use_mock_ai is None else use_mock_ai
-
     async def classify_intent(
         self,
         query: str,
@@ -33,21 +30,18 @@ class LlmService:
         has_image: bool = False,
     ) -> dict[str, Any]:
         """Classify the turn before any potentially unnecessary VLM/RAG calls."""
-        if self.use_mock_ai:
-            result = self._mock_classify_intent(query, chat_history or [], has_image)
-        else:
-            result = await self._generate_structured(
-                system_instruction=INTENT_CLASSIFIER_SYSTEM_PROMPT,
-                prompt={
-                    "current_query": query,
-                    "chat_history": chat_history or [],
-                    "has_attached_image": has_image,
-                },
-                response_schema=self._intent_schema(),
-                temperature=0.0,
-                model=settings.fast_model_name,
-                thinking_budget=settings.llm_fast_thinking_budget,
-            )
+        result = await self._generate_structured(
+            system_instruction=INTENT_CLASSIFIER_SYSTEM_PROMPT,
+            prompt={
+                "current_query": query,
+                "chat_history": chat_history or [],
+                "has_attached_image": has_image,
+            },
+            response_schema=self._intent_schema(),
+            temperature=0.0,
+            model=settings.fast_model_name,
+            thinking_budget=settings.llm_fast_thinking_budget,
+        )
         return IntentClassification.model_validate(result).model_dump()
 
     async def refine_query(
@@ -57,21 +51,18 @@ class LlmService:
         vlm_items: list[dict] | None = None,
     ) -> str:
         """Create the standalone query consumed by retrieval."""
-        if self.use_mock_ai:
-            result = self._mock_refine_query(query, chat_history or [], vlm_items or [])
-        else:
-            result = await self._generate_structured(
-                system_instruction=QUERY_REFINER_SYSTEM_PROMPT,
-                prompt={
-                    "current_query": query,
-                    "chat_history": chat_history or [],
-                    "vlm_items": vlm_items or [],
-                },
-                response_schema=self._query_refinement_schema(),
-                temperature=0.1,
-                model=settings.fast_model_name,
-                thinking_budget=settings.llm_fast_thinking_budget,
-            )
+        result = await self._generate_structured(
+            system_instruction=QUERY_REFINER_SYSTEM_PROMPT,
+            prompt={
+                "current_query": query,
+                "chat_history": chat_history or [],
+                "vlm_items": vlm_items or [],
+            },
+            response_schema=self._query_refinement_schema(),
+            temperature=0.1,
+            model=settings.fast_model_name,
+            thinking_budget=settings.llm_fast_thinking_budget,
+        )
         return QueryRefinement.model_validate(result).query.strip()
 
     async def plan_retrieval(
@@ -95,37 +86,25 @@ class LlmService:
             if str(item_ref).strip()
         }
         previous_items = self._planner_items(previous_rag_results or [], shown_item_refs)
-        if self.use_mock_ai:
-            result = self._mock_plan_retrieval(
-                query=query,
-                original_query=original_query,
-                previous_items=previous_items,
-                previous_retrieval_target=previous_retrieval_target,
-                closet_items=closet_items or [],
-                user_profile=user_profile or {},
-                vlm_items=vlm_items or [],
-                use_closet_style=use_closet_style,
-            )
-        else:
-            result = await self._generate_structured(
-                system_instruction=RETRIEVAL_PLANNER_SYSTEM_PROMPT,
-                prompt={
-                    "current_query": original_query,
-                    "refined_query": query,
-                    "chat_history": chat_history or [],
-                    "previous_rag_query": previous_rag_query,
-                    "previous_retrieval_target": previous_retrieval_target,
-                    "previous_rag_items": previous_items,
-                    "selected_closet_items": closet_items or [],
-                    "user_profile": user_profile or {},
-                    "vlm_items": vlm_items or [],
-                    "use_closet_style": use_closet_style,
-                },
-                response_schema=self._retrieval_plan_schema(),
-                temperature=0.0,
-                model=settings.fast_model_name,
-                thinking_budget=settings.llm_fast_thinking_budget,
-            )
+        result = await self._generate_structured(
+            system_instruction=RETRIEVAL_PLANNER_SYSTEM_PROMPT,
+            prompt={
+                "current_query": original_query,
+                "refined_query": query,
+                "chat_history": chat_history or [],
+                "previous_rag_query": previous_rag_query,
+                "previous_retrieval_target": previous_retrieval_target,
+                "previous_rag_items": previous_items,
+                "selected_closet_items": closet_items or [],
+                "user_profile": user_profile or {},
+                "vlm_items": vlm_items or [],
+                "use_closet_style": use_closet_style,
+            },
+            response_schema=self._retrieval_plan_schema(),
+            temperature=0.0,
+            model=settings.fast_model_name,
+            thinking_budget=settings.llm_fast_thinking_budget,
+        )
 
         plan = RetrievalPlan.model_validate(result)
         available_refs = {
@@ -148,15 +127,12 @@ class LlmService:
         query: str,
         chat_history: list[dict] | None = None,
     ) -> dict[str, Any]:
-        if self.use_mock_ai:
-            answer = self._mock_general_chat(query)
-        else:
-            answer = await self._generate_structured(
-                system_instruction=GENERAL_CHAT_SYSTEM_PROMPT,
-                prompt={"current_query": query, "chat_history": chat_history or []},
-                response_schema=self._general_chat_schema(),
-                temperature=0.5,
-            )
+        answer = await self._generate_structured(
+            system_instruction=GENERAL_CHAT_SYSTEM_PROMPT,
+            prompt={"current_query": query, "chat_history": chat_history or []},
+            response_schema=self._general_chat_schema(),
+            temperature=0.5,
+        )
         message = GeneralChatAnswer.model_validate(answer).message.strip()
         return AgentResponse(
             status="success",
@@ -179,69 +155,18 @@ class LlmService:
     ) -> dict:
         # 홈 타일처럼 더 많은 카드를 채워야 하는 화면은 상한을 올려 잡는다.
         limit = max(1, max_recommendations or MAX_RECOMMENDATIONS)
-        # Always return the same public contract regardless of mock or real LLM.
-        if self.use_mock_ai:
-            response = await self._mock_compose_recommendation(
-                query, vlm_items, ranked_items, retrieval_target, limit
-            )
-        else:
-            response = await self._external_compose_recommendation(
-                query,
-                vlm_items,
-                ranked_items,
-                retrieval_target,
-                closet_items=closet_items or [],
-                use_closet_style=use_closet_style,
-                user_profile=user_profile or {},
-                chat_history=chat_history or [],
-                max_recommendations=limit,
-            )
+        response = await self._external_compose_recommendation(
+            query,
+            vlm_items,
+            ranked_items,
+            retrieval_target,
+            closet_items=closet_items or [],
+            use_closet_style=use_closet_style,
+            user_profile=user_profile or {},
+            chat_history=chat_history or [],
+            max_recommendations=limit,
+        )
         return AgentResponse.model_validate(response).model_dump()
-
-    async def _mock_compose_recommendation(
-        self,
-        query: str,
-        vlm_items: list[dict],
-        ranked_items: list[dict],
-        retrieval_target: str = "musinsa",
-        max_recommendations: int = MAX_RECOMMENDATIONS,
-    ) -> dict:
-        if not ranked_items:
-            return self._empty_response()
-
-        base_item = vlm_items[0] if vlm_items else {}
-        recommendations = []
-        for product in ranked_items[:max_recommendations]:
-            category = product.get("category")
-            base_color = base_item.get("color") or "사용자 스타일"
-            base_category = base_item.get("category") or "아이템"
-            base_mood = base_item.get("mood") or "무드"
-            recommendations.append(
-                {
-                    "item_id": product.get("item_id"),
-                    "source": product.get("source", "musinsa"),
-                    "item_name": product.get("item_name") or product.get("name"),
-                    "brand": product.get("brand"),
-                    "category": category,
-                    "image_url": product["image_url"],
-                    "product_url": product.get("product_url"),
-                    "price": product.get("price"),
-                    "reason": f"{base_color} {base_category}의 {base_mood}와 잘 이어지는 {category or '아이템'}입니다.",
-                }
-            )
-
-        return {
-            "status": "success",
-            "message": "사용자 요청과 스타일 정보를 바탕으로 어울리는 코디를 구성했습니다.",
-            "recommendations": recommendations,
-            "style_guide": {
-                "summary": "오늘의 추천 코디" if retrieval_target == "hybrid" else "맞춤 추천 코디",
-                "tips": [
-                    "추천 리스트의 상품 안에서만 조합했습니다.",
-                    "색상과 무드가 충돌하지 않도록 안정적인 아이템을 우선 배치했습니다.",
-                ],
-            },
-        }
 
     async def _external_compose_recommendation(
         self,
@@ -338,233 +263,6 @@ class LlmService:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
         return self._parse_json_object(self._extract_gemini_text(response.json()))
-
-    def _mock_classify_intent(
-        self,
-        query: str,
-        chat_history: list[dict],
-        has_image: bool,
-    ) -> dict[str, Any]:
-        """Offline-only stand-in; production routing uses the model above."""
-        if has_image:
-            return {"intent": "fashion_service", "reason": "attached image"}
-
-        current = str(query or "").lower()
-        fashion_terms = (
-            "옷",
-            "코디",
-            "패션",
-            "스타일",
-            "상의",
-            "하의",
-            "바지",
-            "팬츠",
-            "셔츠",
-            "니트",
-            "재킷",
-            "자켓",
-            "원피스",
-            "치마",
-            "스커트",
-            "신발",
-            "가방",
-            "모자",
-            "무신사",
-            "wardrobe",
-            "outfit",
-            "fashion",
-            "clothing",
-            "musinsa",
-        )
-        if any(term in current for term in fashion_terms):
-            return {"intent": "fashion_service", "reason": "fashion request"}
-
-        follow_up_terms = (
-            "더 저렴",
-            "더 비싼",
-            "그중",
-            "이 중",
-            "첫 번째",
-            "두 번째",
-            "비슷한",
-            "다른 걸",
-            "하나 더",
-            "그거",
-            "이거",
-        )
-        if any(term in current for term in follow_up_terms):
-            recent = " ".join(str(message.get("content") or "").lower() for message in chat_history[-4:])
-            if any(term in recent for term in fashion_terms):
-                return {"intent": "fashion_service", "reason": "fashion follow-up"}
-        return {"intent": "general_chat", "reason": "ordinary conversation"}
-
-    def _mock_refine_query(
-        self,
-        query: str,
-        chat_history: list[dict],
-        vlm_items: list[dict],
-    ) -> dict[str, str]:
-        conversation_query = build_conversation_query(chat_history, query)
-        refined = build_rag_query({"items": vlm_items}, conversation_query)
-        return {"query": refined or str(query).strip()}
-
-    def _mock_plan_retrieval(
-        self,
-        query: str,
-        original_query: str,
-        previous_items: list[dict[str, Any]],
-        previous_retrieval_target: str | None,
-        closet_items: list[dict],
-        user_profile: dict,
-        vlm_items: list[dict],
-        use_closet_style: bool,
-    ) -> dict[str, Any]:
-        """Deterministic mock used only when USE_MOCK_AI=true."""
-        current = str(original_query or "").lower()
-        resolved = str(query or "").lower()
-        closet_terms = ("옷장", "내 옷으로", "내옷으로", "closet", "wardrobe")
-        catalog_terms = ("무신사", "구매", "살 만한", "살만한", "상품", "buy", "musinsa")
-
-        if any(term in current for term in closet_terms):
-            target = "closet"
-        elif any(term in current for term in catalog_terms):
-            target = "musinsa"
-        elif previous_retrieval_target in {"closet", "musinsa", "hybrid"} and previous_items:
-            target = previous_retrieval_target
-        elif any(term in resolved for term in closet_terms):
-            target = "closet"
-        elif any(term in resolved for term in catalog_terms):
-            target = "musinsa"
-        elif any(
-            item.get("source") == "closet"
-            or str(item.get("product_url") or "").startswith("closet://")
-            or str(item.get("item_id") or item.get("closet_item_id") or "").startswith("closet")
-            for item in vlm_items
-        ):
-            target = "hybrid"
-        elif closet_items or (use_closet_style and any(bool(value) for value in user_profile.values())):
-            target = "hybrid"
-        else:
-            target = "musinsa"
-
-        requested_category = self._category_group(current)
-        previous_categories = {
-            category
-            for item in previous_items
-            if (category := self._category_group(str(item.get("category") or "")))
-        }
-        source_changed = (
-            previous_retrieval_target in {"closet", "musinsa", "hybrid"}
-            and target != previous_retrieval_target
-            and any(term in current for term in (*closet_terms, *catalog_terms))
-        )
-        category_changed = bool(
-            requested_category
-            and previous_categories
-            and requested_category not in previous_categories
-        )
-        if source_changed or category_changed:
-            return {
-                "action": "retrieve",
-                "retrieval_target": target,
-                "candidate_scope": "all",
-                "selected_item_refs": [],
-                "reason": "source or category changed",
-            }
-
-        if not previous_items:
-            return {
-                "action": "retrieve",
-                "retrieval_target": target,
-                "candidate_scope": "all",
-                "selected_item_refs": [],
-                "reason": "no previous candidates",
-            }
-
-        alternative_terms = (
-            "다른",
-            "새로운",
-            "하나 더",
-            "더 보여",
-            "더 추천",
-            "새로",
-            "비슷한",
-            "또 보여",
-        )
-        if any(term in current for term in alternative_terms):
-            unseen_items = [item for item in previous_items if not item["was_shown"]]
-            if unseen_items:
-                return {
-                    "action": "reuse",
-                    "retrieval_target": target,
-                    "candidate_scope": "unseen",
-                    "selected_item_refs": [item["ref"] for item in unseen_items],
-                    "reason": "unseen previous candidates are sufficient",
-                }
-            return {
-                "action": "retrieve",
-                "retrieval_target": target,
-                "candidate_scope": "unseen",
-                "selected_item_refs": [],
-                "reason": "cached unseen candidates are exhausted",
-            }
-
-        explicit_reference_terms = (
-            "이 중",
-            "그중",
-            "첫 번째",
-            "두 번째",
-            "설명",
-            "어느",
-            "뭐가",
-            "방금",
-            "아까",
-        )
-        comparison_terms = ("저렴", "비싼", "가격", "비교")
-        should_reuse = any(term in current for term in (*explicit_reference_terms, *comparison_terms))
-        if not should_reuse:
-            return {
-                "action": "retrieve",
-                "retrieval_target": target,
-                "candidate_scope": "all",
-                "selected_item_refs": [],
-                "reason": "new or insufficient request",
-            }
-
-        candidate_scope = "shown" if any(
-            term in current for term in explicit_reference_terms
-        ) and any(item["was_shown"] for item in previous_items) else "all"
-        ordered = [
-            item
-            for item in previous_items
-            if candidate_scope == "all" or item["was_shown"]
-        ]
-        if "저렴" in current:
-            ordered.sort(key=lambda item: (item.get("price") is None, item.get("price") or 0))
-        elif "비싼" in current:
-            ordered.sort(key=lambda item: item.get("price") or -1, reverse=True)
-        if "첫 번째" in current:
-            ordered = ordered[:1]
-        elif "두 번째" in current:
-            ordered = ordered[1:2]
-
-        return {
-            "action": "reuse",
-            "retrieval_target": target,
-            "candidate_scope": candidate_scope,
-            "selected_item_refs": [item["ref"] for item in ordered],
-            "reason": "previous candidates are sufficient",
-        }
-
-    def _mock_general_chat(self, query: str) -> dict[str, str]:
-        current = str(query or "").strip()
-        if any(greeting in current.lower() for greeting in ("안녕", "hello", "hi")):
-            message = "안녕하세요! 무엇을 도와드릴까요?"
-        elif "고마" in current.lower():
-            message = "천만에요. 필요할 때 언제든 말씀해주세요!"
-        else:
-            message = "말씀하신 내용을 확인했어요. 궁금한 점을 조금 더 구체적으로 알려주세요."
-        return {"message": message}
 
     def _planner_items(
         self,

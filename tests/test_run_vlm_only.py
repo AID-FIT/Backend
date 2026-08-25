@@ -105,7 +105,7 @@ def test_real_download_path_accepts_the_served_photo(tmp_path: Path) -> None:
 
     async def download() -> tuple[bytes, str]:
         async with httpx.AsyncClient(timeout=5) as client:
-            return await VlmService(use_mock_ai=False)._download_image(client, resolved[0])
+            return await VlmService()._download_image(client, resolved[0])
 
     try:
         content, mime_type = asyncio.run(download())
@@ -170,7 +170,7 @@ def test_redirecting_image_url_is_followed(monkeypatch) -> None:
             follow_redirects=True,
             headers={"User-Agent": vlm_module.IMAGE_USER_AGENT},
         ) as client:
-            return await VlmService(use_mock_ai=False)._download_image(client, server.url)
+            return await VlmService()._download_image(client, server.url)
 
     try:
         content, mime_type = asyncio.run(download())

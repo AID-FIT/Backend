@@ -98,11 +98,6 @@ async def main() -> None:
         help="Public image URLs or local image file paths. Defaults to one sample product image.",
     )
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="Use the mock VLM path instead of calling Gemini.",
-    )
-    parser.add_argument(
         "--closet",
         action="store_true",
         help="Use the closet upload path (one item per photo) instead of the recommendation path.",
@@ -116,7 +111,7 @@ async def main() -> None:
                 print(f"[local] {original} -> {url}", file=sys.stderr)
 
     try:
-        service = VlmService(use_mock_ai=args.mock)
+        service = VlmService()
         response = await analyze_images(service, image_urls, args.closet)
     finally:
         if server is not None:

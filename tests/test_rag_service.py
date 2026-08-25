@@ -1,6 +1,7 @@
 import asyncio
 
 from app.services.rag_service import RagService
+from tests.fake_ai import DeterministicRagService
 
 
 def closet_item(item_id: str, image_url: str, category: str = "하의") -> dict:
@@ -42,7 +43,7 @@ def rag_request(
 
 
 def test_mock_rag_excludes_previously_shown_item_refs_before_limiting() -> None:
-    service = RagService(use_mock_ai=True)
+    service = DeterministicRagService()
 
     items = asyncio.run(
         service.search(
@@ -62,7 +63,7 @@ def test_mock_rag_excludes_previously_shown_item_refs_before_limiting() -> None:
 
 
 def test_closet_target_returns_only_owned_closet_items() -> None:
-    service = RagService(use_mock_ai=True)
+    service = DeterministicRagService()
     owned_items = [
         closet_item("closet_001", "https://cdn.aidfit.com/closet_001.jpg"),
         closet_item("closet_002", "https://cdn.aidfit.com/closet_002.jpg", category="신발"),
@@ -75,7 +76,7 @@ def test_closet_target_returns_only_owned_closet_items() -> None:
 
 
 def test_closet_target_does_not_fall_back_to_musinsa_when_closet_is_empty() -> None:
-    service = RagService(use_mock_ai=True)
+    service = DeterministicRagService()
 
     response = asyncio.run(service.search_request(rag_request("closet", [])))
 
@@ -83,7 +84,7 @@ def test_closet_target_does_not_fall_back_to_musinsa_when_closet_is_empty() -> N
 
 
 def test_closet_target_excludes_the_attached_reference_item() -> None:
-    service = RagService(use_mock_ai=True)
+    service = DeterministicRagService()
     reference_url = "https://cdn.aidfit.com/reference.jpg"
     owned_items = [
         closet_item("reference", reference_url, category="상의"),
@@ -100,7 +101,7 @@ def test_closet_target_excludes_the_attached_reference_item() -> None:
 
 
 def test_hybrid_target_combines_closet_and_musinsa_items() -> None:
-    service = RagService(use_mock_ai=True)
+    service = DeterministicRagService()
     owned_items = [closet_item("closet_001", "https://cdn.aidfit.com/closet_001.jpg")]
 
     response = asyncio.run(service.search_request(rag_request("hybrid", owned_items)))
@@ -109,7 +110,7 @@ def test_hybrid_target_combines_closet_and_musinsa_items() -> None:
 
 
 def test_external_musinsa_target_uses_vector_catalog(monkeypatch) -> None:
-    service = RagService(use_mock_ai=False)
+    service = RagService()
     calls = []
 
     async def fake_vector_search(request) -> list[dict]:
@@ -137,7 +138,7 @@ def test_external_musinsa_target_uses_vector_catalog(monkeypatch) -> None:
 
 
 def test_external_hybrid_target_combines_closet_and_vector_items(monkeypatch) -> None:
-    service = RagService(use_mock_ai=False)
+    service = RagService()
 
     async def fake_vector_search(_request) -> list[dict]:
         return [

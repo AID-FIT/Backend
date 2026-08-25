@@ -80,14 +80,9 @@ async def main() -> None:
         default="화이트 오버핏 니트에 어울리는 바지 추천해줘",
         help="User request passed directly to the LLM service.",
     )
-    parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="Use the mock LLM path instead of calling Gemini.",
-    )
     args = parser.parse_args()
 
-    service = LlmService(use_mock_ai=args.mock)
+    service = LlmService()
     result = await service.compose_recommendation(
         query=args.query,
         vlm_items=SAMPLE_VLM_ITEMS,

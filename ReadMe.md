@@ -2,9 +2,9 @@
 
 AID-FIT 백엔드는 React Native 프론트엔드에서 업로드한 의류 이미지와 텍스트 요청을 받아 VLM 분석, RAG 검색, LangGraph 기반 에이전트 추론을 거쳐 코디 추천 결과를 반환하는 FastAPI 서버입니다.
 
-현재 구현은 외부 AI 없이도 프론트엔드 연동을 진행할 수 있도록 mock 서비스를 기본값으로 제공하며(`USE_MOCK_AI=true`), 운영 모드에서는 Gemini VLM/LLM과 로컬 ChromaDB 상품 검색을 사용합니다.
+Gemini VLM/LLM과 pgvector 상품 검색을 사용합니다. 목업 경로는 없으므로 `GEMINI_API_KEY`가 필요합니다.
 
-VLM(`app/services/vlm_service.py`)과 LLM은 Gemini에, RAG는 `data/chromadb_final`의 ChromaDB에 연결되어 있습니다. `USE_MOCK_AI=false` + `GEMINI_API_KEY` 설정 시 실제 파이프라인을 사용합니다.
+VLM(`app/services/vlm_service.py`)과 LLM은 Gemini에, RAG는 Supabase pgvector에 연결되어 있습니다. `GEMINI_API_KEY`가 있어야 동작합니다.
 
 ### VLM 동작 방식
 
@@ -69,7 +69,7 @@ app/
 
 ## LLM-based LangGraph Flow
 
-추천 Agent의 분기 결정은 운영 모드(`USE_MOCK_AI=false`)에서 Gemini 구조화 출력으로 수행합니다. LangGraph 노드는 키워드 규칙으로 의도를 결정하지 않고, 각 LLM 결과를 Pydantic 계약으로 검증한 뒤 다음 노드로 라우팅합니다.
+추천 Agent의 분기 결정은 Gemini 구조화 출력으로 수행합니다. LangGraph 노드는 키워드 규칙으로 의도를 결정하지 않고, 각 LLM 결과를 Pydantic 계약으로 검증한 뒤 다음 노드로 라우팅합니다.
 
 ```text
 입력 검증
@@ -87,7 +87,7 @@ app/
 
 채팅 경로는 RAG 후보 풀, 누적 노출 `item_ref`, 원 검색 질의·대상·조회 시각을 assistant 메시지의 비공개 `_agent_context`에 저장합니다. "하나 더", "다른 상품"처럼 같은 의도의 추가 추천은 아직 노출되지 않은 후보만 재랭킹해 RAG 호출을 생략합니다. 비교·설명 요청은 이미 노출된 후보를 사용할 수 있고, 미노출 후보 소진·TTL 만료·주제/카테고리/소스/필수 조건 변경 시에만 새 RAG를 수행합니다. 미노출 후보가 소진된 재검색에는 누적 노출 ID가 제외 필터로 전달됩니다. 이 비공개 컨텍스트는 채팅 조회 API 응답에서 제거됩니다.
 
-`USE_MOCK_AI=true`에서는 외부 API 없이 프론트엔드와 테스트를 실행할 수 있도록 결정론적 mock 판단을 사용합니다. 실제 LLM 라우팅을 사용하려면 `USE_MOCK_AI=false`와 `GEMINI_API_KEY`를 설정합니다.
+라우팅 판단은 모두 Gemini 구조화 출력으로 이뤄집니다. 네트워크 없이 도는 결정적 더블은 `tests/fake_ai.py`에 있으며 테스트에서만 씁니다.
 
 ## Local Setup
 
@@ -99,11 +99,8 @@ PowerShell에서 바로 대화형으로 확인할 수 있습니다.
 화면형 상세 설명은 [로컬 Agent 채팅 HTML 가이드](docs/local_agent_chat_guide.html)를 확인하세요.
 
 ```powershell
-# .env의 USE_MOCK_AI 설정을 따름 (기본값)
+# .env의 GEMINI_API_KEY를 사용한다
 .\scripts\run_agent_chat.ps1
-
-# 외부 API를 전혀 호출하지 않는 완전 로컬 mock 테스트
-.\scripts\run_agent_chat.ps1 -Mode Mock
 
 # .env의 GEMINI_API_KEY를 사용하는 실제 LLM 테스트
 .\scripts\run_agent_chat.ps1 -Mode Gemini
@@ -158,7 +155,6 @@ scripts/k3s/deploy.sh
 | `LOCAL_UPLOAD_DIR` | 로컬 이미지 저장 폴더 | `uploads` |
 | `PUBLIC_BASE_URL` | 업로드 URL 생성 기준 | `http://localhost:8000`, `https://api.aidfit.o-r.kr` |
 | `CORS_ORIGINS` | 프론트엔드 허용 Origin 목록 | `http://localhost:8081,http://localhost:19006,http://devse.kr:12571` |
-| `USE_MOCK_AI` | mock AI 사용 여부 | `true` |
 | `GEMINI_API_KEY` | Gemini API 키. LLM과 VLM이 함께 사용 | `AIza...` |
 | `VLM_MODEL` | 이미지 분석 모델. 비우면 `GEMINI_MODEL` 사용 | `gemini-2.5-flash` |
 | `VLM_TIMEOUT_SECONDS` | 이미지 다운로드 및 분석 타임아웃 | `30` |
@@ -177,7 +173,7 @@ scripts/k3s/deploy.sh
 
 ### Vector DB
 
-실제 상품 검색을 사용하려면 `USE_MOCK_AI=false`로 설정하고 다음 구조로 ChromaDB를 배치합니다.
+정적 카탈로그 경로(`RAG_VECTOR_BACKEND=static`)를 쓸 때는 다음 구조로 ChromaDB를 배치합니다.
 
 ```text
 data/
@@ -460,7 +456,7 @@ Fallback response when the image is not recognized as clothing:
 
 #### `GET /recommendations/{recommendation_id}`
 
-추천 결과 상세 조회. 현재는 DB persist 전 단계이므로 mock 추천 응답을 반환합니다.
+추천 결과 상세 조회.
 
 ### Products
 
@@ -609,7 +605,6 @@ LLM은 반드시 RAG가 반환한 `rag_items` 내부 상품만 추천해야 합�
 
 ## Current Limitations
 
-- DB 모델은 작성되어 있으나 API는 아직 mock 응답 중심입니다.
 - Alembic migration 파일은 아직 생성하지 않았습니다.
 - Auth는 JWT 발급 골격만 있으며 실제 사용자 검증은 미구현입니다.
 - S3 저장은 `StorageService` 교체 지점만 마련되어 있고 현재는 로컬 저장입니다.

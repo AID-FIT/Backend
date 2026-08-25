@@ -7,49 +7,10 @@ from app.schemas.ai import RAGRequest, RAGResponse
 class RagService:
     FALLBACK_IMAGE_URL = "https://image.msscdn.net/images/no_image_500.png"
 
-    def __init__(self, use_mock_ai: bool | None = None) -> None:
-        self.use_mock_ai = settings.use_mock_ai if use_mock_ai is None else use_mock_ai
-
     async def search_request(self, rag_request: dict) -> dict:
-        # Keep mock and future external retrieval behind the same contract.
         request = RAGRequest.model_validate(rag_request)
-        if self.use_mock_ai:
-            response = await self._mock_search_request(request)
-        else:
-            response = await self._external_search_request(request)
+        response = await self._external_search_request(request)
         return RAGResponse.model_validate(response).model_dump()
-
-    async def _mock_search_request(self, request: RAGRequest) -> dict:
-        excluded_item_refs = request.filters.get("excluded_item_refs") or []
-        refresh_seed = int(request.filters.get("refresh_seed") or 0)
-
-        if request.retrieval_target == "closet":
-            items = self._search_closet(request, limit=request.top_k, refresh_seed=refresh_seed)
-        elif request.retrieval_target == "musinsa":
-            items = await self.search(
-                request.query,
-                limit=request.top_k,
-                refresh_seed=refresh_seed,
-                excluded_item_refs=excluded_item_refs,
-            )
-        else:
-            closet_items = self._search_closet(
-                request,
-                limit=request.top_k,
-                refresh_seed=refresh_seed,
-            )
-            catalog_items = await self.search(
-                request.query,
-                limit=request.top_k,
-                refresh_seed=refresh_seed,
-                excluded_item_refs=excluded_item_refs,
-            )
-            items = self._interleave(closet_items, catalog_items)[: request.top_k]
-
-        return {
-            "items": [self._normalize_item(item) for item in items],
-            "message": "success" if items else "검색 결과가 없습니다.",
-        }
 
     async def _external_search_request(self, request: RAGRequest) -> dict:
         excluded_item_refs = {
@@ -84,11 +45,37 @@ class RagService:
             "message": "success" if normalized_items else "검색 결과가 없습니다.",
         }
 
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        refresh_seed: int = 0,
+        excluded_item_refs: list[str] | None = None,
+    ) -> list[dict]:
+        """카탈로그에서 상품을 찾는다.
+
+        목업 카탈로그를 돌려주던 자리다. 목업을 걷어내면서 실제 검색으로
+        바꿨다. `/products`가 이 경로를 쓴다.
+        """
+        request = RAGRequest(
+            user_id="",
+            query=query,
+            retrieval_target="musinsa",
+            filters={
+                "refresh_seed": refresh_seed,
+                "excluded_item_refs": excluded_item_refs or [],
+            },
+            top_k=limit,
+        )
+        items = await self._search_vector_catalog(request)
+        return [self._normalize_item(item) for item in items]
+
     async def _search_vector_catalog(self, request: RAGRequest) -> list[dict]:
         if settings.rag_vector_backend == "pgvector":
             return await self._search_pgvector(request)
 
-        # Import lazily so mock-only development does not require the vector stack.
+        # 정적 카탈로그 경로는 chromadb를 끌고 온다. pgvector를 쓸 때는
+        # 불러오지 않도록 함수 안에서 import한다.
         from rag_service_final import search as vector_search
 
         musinsa_request = request.model_copy(update={"retrieval_target": "musinsa"})
@@ -118,34 +105,13 @@ class RagService:
                 excluded_item_refs=excluded,
                 # 벡터 검색은 결정적이라 seed가 없으면 새로고침해도 같은 목록이 나온다.
                 refresh_seed=int(request.filters.get("refresh_seed") or 0),
+                # 옷장·사진·취향은 필터로 만들 수 없는 신호다. 질의 텍스트에
+                # 실어야 임베딩이 잡고, 메타데이터 점수에도 쓰인다.
+                vlm_items=request.vlm_items,
+                closet_items=request.closet_items,
+                use_closet_style=request.use_closet_style,
+                preferred_styles=(request.user_profile or {}).get("preferred_styles"),
             )
-
-    async def search(
-        self,
-        query: str,
-        limit: int = 5,
-        refresh_seed: int = 0,
-        excluded_item_refs: list[str] | None = None,
-    ) -> list[dict]:
-        excluded_refs = {
-            str(item_ref).strip()
-            for item_ref in excluded_item_refs or []
-            if str(item_ref).strip()
-        }
-        catalog = [
-            item
-            for item in self._mock_catalog()
-            if not excluded_refs.intersection(
-                str(item.get(key) or "").strip()
-                for key in ("item_id", "product_url", "image_url")
-                if str(item.get(key) or "").strip()
-            )
-        ]
-        if not catalog or limit <= 0:
-            return []
-
-        start = (max(refresh_seed, 0) * limit) % len(catalog)
-        return [catalog[(start + offset) % len(catalog)] for offset in range(min(limit, len(catalog)))]
 
     def _search_closet(
         self,
@@ -279,128 +245,3 @@ class RagService:
             "metadata_score": item.get("metadata_score"),
             "final_score": item.get("final_score"),
         }
-
-    def _mock_catalog(self) -> list[dict]:
-        # Temporary Musinsa-like catalog used until vector retrieval is wired.
-        return [
-            {
-                "item_id": "6081171",
-                "source": "musinsa",
-                "item_name": "[SET] 그래픽 피그먼트 오버핏 반팔티셔츠 VOL.01",
-                "brand": "모즈모즈",
-                "category": "상의",
-                "price": 54400,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260304/6081171/6081171_17738881269364_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6081171",
-            },
-            {
-                "item_id": "6075610",
-                "source": "musinsa",
-                "item_name": "CRACKED STAR HALF T BEIGE",
-                "brand": "메종미네드",
-                "category": "상의",
-                "price": 38700,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260303/6075610/6075610_17733148086242_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6075610",
-            },
-            {
-                "item_id": "6103287",
-                "source": "musinsa",
-                "item_name": "와플 헨리넥 데일리 반팔 티셔츠 - 2color",
-                "brand": "마인드브릿지",
-                "category": "상의",
-                "price": 29900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260309/6103287/6103287_17750284664520_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6103287",
-            },
-            {
-                "item_id": "6125368",
-                "source": "musinsa",
-                "item_name": "[JURASSIC WORLD] Mosasaurus Tee_VTG Black",
-                "brand": "파르티멘토 리웍스",
-                "category": "상의",
-                "price": 49900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260312/6125368/6125368_17744981268200_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6125368",
-            },
-            {
-                "item_id": "6084669",
-                "source": "musinsa",
-                "item_name": "NYC LOCATION T-SHIRT (23COLOR) (LRAMCTR702P)",
-                "brand": "그루브라임",
-                "category": "상의",
-                "price": 9900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260305/6084669/6084669_17726862036016_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6084669",
-            },
-            {
-                "item_id": "6102395",
-                "source": "musinsa",
-                "item_name": "소프트 그래픽 쇼트 슬리브 티셔츠",
-                "brand": "아웃스탠딩",
-                "category": "상의",
-                "price": 33000,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260309/6102395/6102395_17739872421263_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6102395",
-            },
-            {
-                "item_id": "6129443",
-                "source": "musinsa",
-                "item_name": "코리안 레터링 반팔 티셔츠 - NAVY",
-                "brand": "마크곤잘레스",
-                "category": "상의",
-                "price": 46550,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260313/6129443/6129443_17737134775461_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6129443",
-            },
-            {
-                "item_id": "6086792",
-                "source": "musinsa",
-                "item_name": "릴랙스 그래픽 반팔 티셔츠",
-                "brand": "스파오",
-                "category": "상의",
-                "price": 25900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260305/6086792/6086792_17727543246534_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6086792",
-            },
-            {
-                "item_id": "6125389",
-                "source": "musinsa",
-                "item_name": "[BACK TO THE FUTURE] Duo Tee_VTG Black",
-                "brand": "파르티멘토 리웍스",
-                "category": "상의",
-                "price": 49900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260312/6125389/6125389_17744979667151_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6125389",
-            },
-            {
-                "item_id": "6108783",
-                "source": "musinsa",
-                "item_name": "Chaser 링거 반팔 티셔츠",
-                "brand": "비바스튜디오",
-                "category": "상의",
-                "price": 35900,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260310/6108783/6108783_17742516004008_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6108783",
-            },
-            {
-                "item_id": "6107195",
-                "source": "musinsa",
-                "item_name": "PENGUIN CHARACTER T-SHIRTS (LRPMCTA419M)",
-                "brand": "그루브라임",
-                "category": "상의",
-                "price": 8750,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260310/6107195/6107195_17731192461772_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6107195",
-            },
-            {
-                "item_id": "6109669",
-                "source": "musinsa",
-                "item_name": "Youthful 반팔 티셔츠",
-                "brand": "비바스튜디오",
-                "category": "상의",
-                "price": 28400,
-                "image_url": "https://image.msscdn.net/images/goods_img/20260310/6109669/6109669_17731302889705_500.jpg",
-                "product_url": "https://www.musinsa.com/products/6109669",
-            },
-        ]

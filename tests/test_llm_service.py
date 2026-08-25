@@ -3,6 +3,7 @@ import json
 
 from app.services import llm_service as llm_module
 from app.services.llm_service import LlmService
+from tests.fake_ai import DeterministicLlmService
 
 
 class FakeGeminiResponse:
@@ -65,7 +66,7 @@ def test_external_compose_calls_gemini_and_normalizes_candidates(monkeypatch) ->
     monkeypatch.setattr(llm_module.settings, "gemini_model", "gemini-test")
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
     result = asyncio.run(
         service.compose_recommendation(
             query="화이트 니트에 어울리는 바지 추천",
@@ -118,7 +119,7 @@ def test_external_compose_returns_empty_when_gemini_recommends_unknown_item(monk
     monkeypatch.setattr(llm_module.settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
     result = asyncio.run(
         service.compose_recommendation(
             query="추천해줘",
@@ -143,7 +144,7 @@ def test_external_intent_and_query_refinement_use_structured_gemini(monkeypatch)
     FakeAsyncClient.calls = []
     monkeypatch.setattr(llm_module.settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
 
     FakeAsyncClient.response_payload = {
         "intent": "fashion_service",
@@ -188,7 +189,7 @@ def test_external_retrieval_plan_cannot_reuse_unknown_candidate(monkeypatch) -> 
     monkeypatch.setattr(llm_module.settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
 
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
     plan = asyncio.run(
         service.plan_retrieval(
             query="직전 후보 중 저렴한 상품",
@@ -212,7 +213,7 @@ def test_external_retrieval_plan_cannot_reuse_unknown_candidate(monkeypatch) -> 
 
 
 def test_mock_retrieval_plan_reuses_only_unseen_candidates_for_more_results() -> None:
-    service = LlmService(use_mock_ai=True)
+    service = DeterministicLlmService()
     previous_items = [
         {
             "item_id": item_id,
@@ -241,7 +242,7 @@ def test_mock_retrieval_plan_reuses_only_unseen_candidates_for_more_results() ->
 
 
 def test_mock_retrieval_plan_understands_generic_closet_wording() -> None:
-    service = LlmService(use_mock_ai=True)
+    service = DeterministicLlmService()
 
     plan = asyncio.run(
         service.plan_retrieval(
@@ -255,7 +256,7 @@ def test_mock_retrieval_plan_understands_generic_closet_wording() -> None:
 
 
 def test_mock_retrieval_plan_retrieves_when_unseen_cache_is_exhausted() -> None:
-    service = LlmService(use_mock_ai=True)
+    service = DeterministicLlmService()
     previous_item = {
         "item_id": "shown",
         "source": "musinsa",
@@ -291,7 +292,7 @@ def test_external_retrieval_plan_filters_shown_refs_from_unseen_scope(monkeypatc
     }
     monkeypatch.setattr(llm_module.settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
     previous_items = [
         {
             "item_id": item_id,

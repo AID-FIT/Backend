@@ -3,6 +3,7 @@ import asyncio
 from app.agent.agent_pipeline import AidFitAgentPipeline
 from app.agent.nodes import AgentNodes
 from app.services.llm_service import LlmService
+from tests.fake_ai import DeterministicLlmService
 
 
 class FakeVlmService:
@@ -77,7 +78,7 @@ class FakeLlmService:
         self.refined_query = refined_query
         self.retrieval_plan = retrieval_plan
         self.general_response = general_response
-        self.mock_llm = LlmService(use_mock_ai=True)
+        self.mock_llm = DeterministicLlmService()
 
     async def classify_intent(
         self,
@@ -918,7 +919,7 @@ def test_exhausted_unseen_cache_runs_rag_with_shown_item_exclusions() -> None:
 def test_two_turn_mock_flow_serves_disjoint_products_without_second_rag_call() -> None:
     items = [fake_item(f"item-{index}") for index in range(8)]
     rag = FakeRagService(items=items)
-    llm = LlmService(use_mock_ai=True)
+    llm = DeterministicLlmService()
     pipeline = AidFitAgentPipeline(AgentNodes(FakeVlmService(), rag, llm))
 
     first = asyncio.run(

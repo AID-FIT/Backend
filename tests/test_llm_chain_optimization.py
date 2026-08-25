@@ -6,6 +6,7 @@ import pytest
 from app.agent.nodes import AgentNodes
 from app.core import config as config_module
 from app.services.llm_service import MAX_RECOMMENDATIONS, LlmService
+from tests.fake_ai import DeterministicLlmService
 from tests.test_agent_pipeline import FakeLlmService
 
 
@@ -50,7 +51,7 @@ def _capture_requests(monkeypatch):
 
 
 def generate(**kwargs) -> None:
-    service = LlmService(use_mock_ai=False)
+    service = LlmService()
     asyncio.run(
         service._generate_structured(
             system_instruction="classify",
@@ -108,7 +109,7 @@ def test_intent_classification_runs_on_the_fast_model(monkeypatch) -> None:
     monkeypatch.setattr(config_module.settings, "llm_fast_model", "light-model", raising=False)
     monkeypatch.setattr(config_module.settings, "llm_fast_thinking_budget", 0, raising=False)
 
-    asyncio.run(LlmService(use_mock_ai=False).classify_intent(query="바지 추천"))
+    asyncio.run(LlmService().classify_intent(query="바지 추천"))
 
     request = last_request()
     assert "/models/light-model:" in request["url"]
@@ -125,7 +126,7 @@ def test_query_refinement_runs_on_the_fast_model(monkeypatch) -> None:
         },
     )
 
-    asyncio.run(LlmService(use_mock_ai=False).refine_query(query="바지"))
+    asyncio.run(LlmService().refine_query(query="바지"))
 
     assert "/models/light-model:" in last_request()["url"]
 
@@ -159,7 +160,7 @@ def test_final_composition_keeps_the_default_model(monkeypatch) -> None:
     )
 
     asyncio.run(
-        LlmService(use_mock_ai=False).compose_recommendation(
+        LlmService().compose_recommendation(
             query="바지",
             vlm_items=[],
             ranked_items=[
@@ -265,9 +266,8 @@ def ranked(count: int) -> list[dict]:
     ]
 
 
-def test_mock_recommendation_honors_the_requested_count() -> None:
-    service = LlmService()
-    service.use_mock_ai = True
+def test_recommendation_honors_the_requested_count() -> None:
+    service = DeterministicLlmService()
 
     response = asyncio.run(
         service.compose_recommendation(
@@ -279,8 +279,7 @@ def test_mock_recommendation_honors_the_requested_count() -> None:
 
 
 def test_recommendation_defaults_to_the_chat_cap() -> None:
-    service = LlmService()
-    service.use_mock_ai = True
+    service = DeterministicLlmService()
 
     response = asyncio.run(
         service.compose_recommendation("오늘 뭐 입지", [], ranked(12), "musinsa")

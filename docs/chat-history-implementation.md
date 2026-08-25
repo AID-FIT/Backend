@@ -352,7 +352,7 @@ Agent 답변의 전체 `payload`를 그대로 프롬프트에 넣으면 토큰 �
 - 원문 `query`: 사용자 답변 생성과 DB 저장에 사용한다.
 - `resolved_query`: intent 분류, RAG 검색, 랭킹에 사용한다.
 
-운영 모드에서는 별도의 query rewrite LLM 호출을 사용한다. `USE_MOCK_AI=true`인 로컬/mock 모드에서만 최근 사용자 질문과 Agent 답변, VLM 메타데이터를 결정론적으로 결합한다.
+별도의 query rewrite LLM 호출을 사용한다. 목업 경로는 제거됐고, 테스트용 결정적 더블만 `tests/fake_ai.py`에 남아 있다.
 
 ## 9. 보안 및 운영 기준
 

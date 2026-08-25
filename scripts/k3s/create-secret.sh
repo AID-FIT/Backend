@@ -35,7 +35,6 @@ kubectl create secret generic "${SECRET_NAME}" \
   --from-literal=LOCAL_UPLOAD_DIR="${LOCAL_UPLOAD_DIR:-uploads}" \
   --from-literal=PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:12570}" \
   --from-literal=CORS_ORIGINS="${CORS_ORIGINS:-*}" \
-  --from-literal=USE_MOCK_AI="${USE_MOCK_AI:-true}" \
   --from-literal=RAG_VECTOR_DB_PATH="${RAG_VECTOR_DB_PATH:-/app/data/chromadb_final}" \
   --from-literal=RAG_COLLECTION_NAME="${RAG_COLLECTION_NAME:-musinsa}" \
   --from-literal=RAG_EMBEDDING_MODEL="${RAG_EMBEDDING_MODEL:-jhgan/ko-sroberta-multitask}" \

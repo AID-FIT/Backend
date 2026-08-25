@@ -33,7 +33,7 @@ with suppress_langchain_deprecation_warning():
     from app.services.vlm_service import VlmService
 
 
-SUPPORTED_MODES = ("auto", "mock", "gemini")
+SUPPORTED_MODES = ("auto", "gemini")
 DEFAULT_HISTORY_MESSAGES = 20
 
 
@@ -120,24 +120,21 @@ class LocalChatSession:
 
 
 def resolve_mode(requested_mode: str) -> str:
-    if requested_mode == "auto":
-        return "mock" if settings.use_mock_ai else "gemini"
-    return requested_mode
+    # 목업 경로가 사라져 남은 모드는 gemini 하나뿐이다.
+    return "gemini" if requested_mode == "auto" else requested_mode
 
 
 def build_pipeline(requested_mode: str) -> tuple[AidFitAgentPipeline, str]:
     mode = resolve_mode(requested_mode)
     if mode == "gemini" and not settings.gemini_api_key.strip():
         raise LocalChatConfigurationError(
-            "Gemini 모드에는 .env의 GEMINI_API_KEY가 필요합니다. "
-            "키 없이 확인하려면 -Mode Mock을 사용하세요."
+            "Gemini 모드에는 .env의 GEMINI_API_KEY가 필요합니다."
         )
 
-    use_mock_ai = mode == "mock"
     nodes = AgentNodes(
-        vlm_service=VlmService(use_mock_ai=use_mock_ai),
-        rag_service=RagService(use_mock_ai=use_mock_ai),
-        llm_service=LlmService(use_mock_ai=use_mock_ai),
+        vlm_service=VlmService(),
+        rag_service=RagService(),
+        llm_service=LlmService(),
     )
     with suppress_langchain_deprecation_warning():
         pipeline = AidFitAgentPipeline(nodes)
@@ -309,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=SUPPORTED_MODES,
         default="auto",
-        help="auto follows USE_MOCK_AI from .env; mock is offline; gemini calls Gemini.",
+        help="gemini는 Gemini를 호출한다. auto도 같다 — 목업 경로는 없다.",
     )
     parser.add_argument("--query", help="Run one question and exit instead of opening interactive chat.")
     parser.add_argument(

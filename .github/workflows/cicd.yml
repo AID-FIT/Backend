@@ -133,7 +133,6 @@ jobs:
             --from-literal=LOCAL_UPLOAD_DIR="uploads" \
             --from-literal=PUBLIC_BASE_URL="${{ secrets.PUBLIC_BASE_URL }}" \
             --from-literal=CORS_ORIGINS="${{ secrets.CORS_ORIGINS }}" \
-            --from-literal=USE_MOCK_AI="${{ secrets.USE_MOCK_AI }}" \
             --from-literal=RAG_VECTOR_DB_PATH="/app/data/chromadb_final" \
             --from-literal=RAG_COLLECTION_NAME="musinsa" \
             --from-literal=RAG_EMBEDDING_MODEL="jhgan/ko-sroberta-multitask" \
