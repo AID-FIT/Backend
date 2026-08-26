@@ -101,7 +101,7 @@ def test_external_compose_calls_gemini_and_normalizes_candidates(monkeypatch) ->
     assert prompt["user_profile"] == {"preferred_styles": ["minimal"]}
 
 
-def test_external_compose_returns_empty_when_gemini_recommends_unknown_item(monkeypatch) -> None:
+def test_external_compose_keeps_ranked_item_when_gemini_recommends_unknown_item(monkeypatch) -> None:
     FakeAsyncClient.calls = []
     FakeAsyncClient.response_payload = {
         "status": "success",
@@ -136,8 +136,71 @@ def test_external_compose_returns_empty_when_gemini_recommends_unknown_item(monk
         )
     )
 
-    assert result["status"] == "empty"
-    assert result["recommendations"] == []
+    assert result["status"] == "success"
+    assert [item["item_id"] for item in result["recommendations"]] == ["known"]
+    assert result["recommendations"][0]["reason"] == "사용자 요청과 잘 맞는 추천 상품입니다."
+
+
+def test_external_compose_preserves_server_order_and_maps_only_reasons(monkeypatch) -> None:
+    FakeAsyncClient.calls = []
+    FakeAsyncClient.response_payload = {
+        "status": "success",
+        "message": "추천 결과입니다.",
+        # Gemini가 역순으로 반환하고 가운데 상품을 누락해도 서버 순서는 고정돼야 한다.
+        "recommendations": [
+            {
+                "item_id": "third",
+                "source": "musinsa",
+                "image_url": "https://wrong.example/third.jpg",
+                "reason": "세 번째 상품 이유",
+            },
+            {
+                "item_id": "first",
+                "source": "musinsa",
+                "image_url": "https://wrong.example/first.jpg",
+                "reason": "첫 번째 상품 이유",
+            },
+        ],
+        "style_guide": {"summary": "서버 순서 코디", "tips": []},
+    }
+    monkeypatch.setattr(llm_module.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    ranked_items = [
+        {
+            "item_id": item_id,
+            "source": "musinsa",
+            "name": item_id.title(),
+            "image_url": f"https://image.example/{item_id}.jpg",
+            "product_url": f"https://www.musinsa.com/products/{item_id}",
+        }
+        for item_id in ("first", "second", "third")
+    ]
+
+    result = asyncio.run(
+        LlmService().compose_recommendation(
+            query="추천해줘",
+            vlm_items=[],
+            ranked_items=ranked_items,
+            max_recommendations=3,
+        )
+    )
+
+    assert [item["item_id"] for item in result["recommendations"]] == [
+        "first",
+        "second",
+        "third",
+    ]
+    assert [item["reason"] for item in result["recommendations"]] == [
+        "첫 번째 상품 이유",
+        "사용자 요청과 잘 맞는 추천 상품입니다.",
+        "세 번째 상품 이유",
+    ]
+    assert [item["image_url"] for item in result["recommendations"]] == [
+        "https://image.example/first.jpg",
+        "https://image.example/second.jpg",
+        "https://image.example/third.jpg",
+    ]
 
 
 def test_external_intent_and_query_refinement_use_structured_gemini(monkeypatch) -> None:

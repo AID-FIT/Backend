@@ -231,7 +231,7 @@ def test_home_final_llm_can_only_return_actual_ranked_candidates(monkeypatch) ->
                 "item_id": "known",
                 "source": "musinsa",
                 "image_url": "https://wrong.example/item.jpg",
-                "reason": "실제 후보 중 선택",
+                "reason": "서버가 확정한 후보의 이유",
             },
         ],
         "style_guide": {"summary": "스트릿 코디", "tips": []},

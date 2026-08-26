@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.schemas.recommendation import RecommendationCreateRequest, RecommendationResponse
 from app.services.catalog_matching import is_vague_search_request
 from app.services.closet_service import ClosetService
+from app.services.like_service import LikeService
 from app.services.recommendation_service import RecommendationService
 from app.services.target_category import infer_target_category
 from app.services.user_service import UserService, to_agent_profile
@@ -153,12 +154,15 @@ async def create_recommendation(
         else saved_closet_items
     )
     closet_payload = [closet_service.to_agent_payload(item) for item in selected_closet_items]
+    like_service = LikeService()
+    liked_payload = await like_service.list_style_payloads(db, current_user.id)
     result = await RecommendationService().create_and_persist(
         db=db,
         user_id=current_user.id,
         query=payload.query,
         image_urls=payload.image_urls,
         closet_items=closet_payload,
+        liked_items=liked_payload,
         use_closet_style=payload.use_closet_style,
         user_profile=user_profile,
     )
@@ -184,6 +188,8 @@ async def _build_home_request(
     closet_service = ClosetService()
     closet_items = await closet_service.list_for_user(db, current_user)
     closet_payload = [closet_service.to_agent_payload(item) for item in closet_items]
+    like_service = LikeService()
+    liked_payload = await like_service.list_style_payloads(db, current_user.id)
     user_profile = to_agent_profile(preference)
     age_range = user_profile["age_group"]
     preferred_styles = user_profile["preferred_styles"]
@@ -243,6 +249,7 @@ async def _build_home_request(
             "user_id": current_user.id,
             "context": context,
             "closet_items": closet_payload,
+            "liked_items": liked_payload,
             "use_closet_style": True,
             "user_profile": user_profile,
             # 겨울 검정 스트릿처럼 한 쪽으로 쏠린 취향이면 상위 후보가 전부 아우터가
@@ -283,14 +290,14 @@ def _as_feed_tile(item: dict) -> dict | None:
         "image_url": image_url,
         "product_url": product_url,
         "price": item.get("price"),
-        # 이유는 LLM이 고른 앞쪽 타일에만 붙는다. 나머지는 검색·랭킹이 그대로
-        # 실은 것이라 지어낸 이유를 달지 않는다. 프론트는 빈 이유를 그리지 않는다.
+        # 이유는 코드 랭킹 상위 타일에만 LLM이 붙인다. 나머지는 검색·랭킹이
+        # 그대로 실은 것이라 지어낸 이유를 달지 않는다. 프론트는 빈 이유를 그리지 않는다.
         "reason": "",
     }
 
 
 def _fill_home_feed(response: dict, ranked_items: list[dict]) -> dict:
-    """LLM이 고른 타일 뒤에 랭킹 상위 상품을 카테고리 순환으로 붙인다.
+    """LLM 이유가 붙은 랭킹 상위 타일 뒤를 카테고리 순환으로 채운다.
 
     칩을 클라이언트에서 거르는 구조라 카테고리마다 타일이 여러 칸 남아
     있어야 한다. 그렇다고 LLM에 36개를 쓰게 하면 프롬프트도 생성도 네 배로

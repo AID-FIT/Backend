@@ -17,7 +17,6 @@ from app.schemas.recommendation import AgentResponse
 from app.services.gemini_client import extract_text, parse_json_object
 
 
-MAX_LLM_CANDIDATES = 8
 MAX_RECOMMENDATIONS = 5
 MAX_PREVIOUS_RAG_CANDIDATES = 20
 
@@ -196,10 +195,9 @@ class LlmService:
         if not ranked_items:
             return self._empty_response()
 
-        # Gemini receives only retrieved candidates so it cannot invent products.
-        # 뽑을 개수만큼만 보여주면 LLM이 고를 여지가 없다. 넉넉히 준다.
-        candidate_limit = max(MAX_LLM_CANDIDATES, max_recommendations * 2)
-        candidate_items = self._candidate_items(ranked_items, candidate_limit)
+        # 코드 랭커가 최종 상품과 순서를 확정한다. Gemini에는 그 상품만 보내고,
+        # 응답에서는 이유와 스타일 가이드만 가져온다.
+        candidate_items = self._candidate_items(ranked_items, max_recommendations)
         payload = self._build_gemini_payload(
             query,
             vlm_items,
@@ -402,12 +400,11 @@ class LlmService:
         chat_history: list[dict] | None = None,
         max_recommendations: int = MAX_RECOMMENDATIONS,
     ) -> dict[str, Any]:
-        candidate_limit = max(MAX_LLM_CANDIDATES, max_recommendations * 2)
-        candidate_items = self._candidate_items(ranked_items, candidate_limit)
+        candidate_items = self._candidate_items(ranked_items, max_recommendations)
         prompt = {
             "user_query": query,
-            # 목표 개수를 알려주지 않으면 모델이 두어 개만 고르고 끝낸다.
-            "target_recommendation_count": max_recommendations,
+            # 이 목록은 선택지가 아니라 코드 랭커가 확정한 최종 결과다.
+            "target_recommendation_count": len(candidate_items),
             # 시간순 이전 대화. "더 저렴한 걸로" 같은 후속 질문을 이해하는 데 쓴다.
             "chat_history": chat_history or [],
             "retrieval_target": retrieval_target,
@@ -441,14 +438,14 @@ class LlmService:
         system_instruction = (
             "You are AID-FIT's fashion recommendation writer. "
             "Return only one valid JSON object matching the provided response_contract. "
-            "Do not use markdown. Recommend only products present in candidate_items. "
+            "Do not use markdown. candidate_items is the final server-ranked recommendation list. "
+            "Return every candidate exactly once in the same order. Do not select, omit, or reorder products. "
             "Do not invent product names, brands, prices, image URLs, or product URLs. "
             "Use closet_items, use_closet_style, user_profile, and vlm_items only as styling context. "
             "user_profile.height_cm may inform advice about length and proportion "
             "(hem, sleeve, silhouette); never state a size or a measurement that is not "
             "in candidate_items. "
-            "Return exactly target_recommendation_count recommendations when candidate_items holds "
-            "at least that many suitable products; return fewer only when it does not. "
+            "Write a Korean reason for each candidate and a style guide; product ranking is not your task. "
             "Write all user-facing text in natural Korean."
         )
         return {
@@ -467,29 +464,40 @@ class LlmService:
         }
 
     def _candidate_items(
-        self, ranked_items: list[dict], limit: int = MAX_LLM_CANDIDATES
+        self, ranked_items: list[dict], limit: int = MAX_RECOMMENDATIONS
     ) -> list[dict[str, Any]]:
-        # Limit prompt size while preserving the highest-ranked candidates.
-        return [
-            {
-                "item_id": item.get("item_id"),
-                "source": item.get("source", "musinsa"),
-                "item_name": item.get("item_name") or item.get("name"),
-                "brand": item.get("brand"),
-                "category": item.get("category"),
-                "image_url": item.get("image_url"),
-                "product_url": item.get("product_url"),
-                "price": item.get("price"),
-                "color": item.get("color"),
-                "material": item.get("material"),
-                "fit": item.get("fit"),
-                "pattern": item.get("pattern"),
-                "mood": item.get("mood"),
-                "sense_of_season": item.get("sense_of_season"),
-            }
-            for item in ranked_items[:limit]
-            if item.get("image_url")
-        ]
+        """Return the final contract-valid items in server-ranked order."""
+        candidates: list[dict[str, Any]] = []
+        for item in ranked_items:
+            source = item.get("source", "musinsa")
+            image_url = item.get("image_url")
+            product_url = item.get("product_url")
+            if source not in {"closet", "musinsa"} or not image_url:
+                continue
+            if source == "musinsa" and not product_url:
+                continue
+
+            candidates.append(
+                {
+                    "item_id": item.get("item_id"),
+                    "source": source,
+                    "item_name": item.get("item_name") or item.get("name"),
+                    "brand": item.get("brand"),
+                    "category": item.get("category"),
+                    "image_url": image_url,
+                    "product_url": product_url,
+                    "price": item.get("price"),
+                    "color": item.get("color"),
+                    "material": item.get("material"),
+                    "fit": item.get("fit"),
+                    "pattern": item.get("pattern"),
+                    "mood": item.get("mood"),
+                    "sense_of_season": item.get("sense_of_season"),
+                }
+            )
+            if len(candidates) >= max(1, limit):
+                break
+        return candidates
 
     def _response_schema(self) -> dict[str, Any]:
         return {
@@ -540,25 +548,27 @@ class LlmService:
         candidate_items: list[dict[str, Any]],
         max_recommendations: int = MAX_RECOMMENDATIONS,
     ) -> dict[str, Any]:
-        candidates_by_id = {
-            str(item["item_id"]): item for item in candidate_items if item.get("item_id") is not None
-        }
-        candidates_by_url = {item["image_url"]: item for item in candidate_items if item.get("image_url")}
-
-        normalized_recommendations = []
+        # Gemini가 순서를 바꾸거나 일부 상품을 빼더라도 추천 목록에는 영향을
+        # 주지 못한다. 후보 참조별 이유만 수집한 뒤 서버 순서로 다시 조립한다.
+        reasons_by_id: dict[str, str] = {}
+        reasons_by_url: dict[str, str] = {}
         for recommendation in response.get("recommendations") or []:
             if not isinstance(recommendation, dict):
                 continue
-
-            candidate = None
+            reason = str(recommendation.get("reason") or "").strip()
             item_id = recommendation.get("item_id")
             if item_id is not None:
-                candidate = candidates_by_id.get(str(item_id))
-            if candidate is None and recommendation.get("image_url"):
-                candidate = candidates_by_url.get(recommendation["image_url"])
-            if candidate is None:
-                continue
+                reasons_by_id.setdefault(str(item_id), reason)
+            image_url = recommendation.get("image_url")
+            if image_url:
+                reasons_by_url.setdefault(str(image_url), reason)
 
+        normalized_recommendations = []
+        for candidate in candidate_items[:max_recommendations]:
+            item_id = candidate.get("item_id")
+            reason = reasons_by_id.get(str(item_id), "") if item_id is not None else ""
+            if not reason:
+                reason = reasons_by_url.get(str(candidate.get("image_url") or ""), "")
             normalized_recommendations.append(
                 {
                     "item_id": candidate.get("item_id"),
@@ -569,12 +579,9 @@ class LlmService:
                     "image_url": candidate["image_url"],
                     "product_url": candidate.get("product_url"),
                     "price": candidate.get("price"),
-                    "reason": str(recommendation.get("reason") or "").strip()
-                    or "사용자 요청과 잘 맞는 추천 상품입니다.",
+                    "reason": reason or "사용자 요청과 잘 맞는 추천 상품입니다.",
                 }
             )
-            if len(normalized_recommendations) >= max_recommendations:
-                break
 
         if not normalized_recommendations:
             return self._empty_response()

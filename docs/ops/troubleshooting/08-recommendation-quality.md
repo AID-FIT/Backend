@@ -254,21 +254,25 @@ def test_requested_tile_count_reaches_the_llm() -> None:
     assert run_pipeline(max_recommendations=7)["max_recommendations"] == 7
 ```
 
-### 두 가지를 더 맞춰야 했다
+### 최종 순서는 서버가 소유한다
 
-**(1) LLM에 목표 개수를 말해야 한다.** 후보를 30개 줘도 모델은 서너 개 고르고 끝낸다.
-프롬프트에 `target_recommendation_count`를 넣고, 시스템 지시에도 명시했다.
+코드 랭커가 확정한 상위 상품만 Gemini에 전달한다. Gemini는 상품을 고르거나
+순서를 바꾸지 않고, 각 상품의 추천 이유와 스타일 가이드만 작성한다.
 
 ```
-Return exactly target_recommendation_count recommendations when candidate_items holds
-at least that many suitable products; return fewer only when it does not.
+candidate_items is the final server-ranked recommendation list.
+Return every candidate exactly once in the same order.
 ```
 
-**(2) 후보 수가 목표에 따라 늘어야 한다.** `_candidate_items`의 상한도 고정값이었다.
+프롬프트의 후보 수는 목표 추천 수와 같다.
 
 ```python
-candidate_limit = max(MAX_LLM_CANDIDATES, max_recommendations * 2)
+candidate_items = self._candidate_items(ranked_items, max_recommendations)
 ```
+
+응답 정규화도 Gemini 배열 순서를 신뢰하지 않는다. `item_id` 또는 이미지 URL로
+이유만 회수한 뒤 `candidate_items` 순서로 다시 조립한다. 모델이 역순으로 보내거나
+한 상품을 누락해도 코드 랭킹과 추천 개수는 유지된다.
 
 ### 프론트도 함께 맞췄다
 

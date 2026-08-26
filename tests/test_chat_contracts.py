@@ -59,6 +59,16 @@ class FakeChatUserService:
         return self.preference
 
 
+class FakeChatLikeService:
+    def __init__(self, items: list[dict] | None = None) -> None:
+        self.items = items or []
+        self.user_ids: list[str] = []
+
+    async def list_style_payloads(self, db: object, user_id: str) -> list[dict]:
+        self.user_ids.append(user_id)
+        return self.items
+
+
 class CapturingRecommendationService:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -79,6 +89,10 @@ class CapturingRecommendationService:
 
 
 class StubChatService(ChatService):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("like_service", FakeChatLikeService())
+        super().__init__(*args, **kwargs)
+
     async def get_owned_conversation(
         self,
         db: object,
@@ -165,10 +179,17 @@ def test_chat_sends_authenticated_users_closet_and_profile_to_agent() -> None:
         )
     )
     recommendation_service = CapturingRecommendationService()
+    liked_payload = {
+        "product_ref": "liked_001",
+        "source": "musinsa",
+        "name": "미니멀 셔츠",
+    }
+    like_service = FakeChatLikeService([liked_payload])
     service = StubChatService(
         recommendation_service=recommendation_service,
         closet_service=closet_service,
         user_service=user_service,
+        like_service=like_service,
     )
 
     asyncio.run(
@@ -183,7 +204,9 @@ def test_chat_sends_authenticated_users_closet_and_profile_to_agent() -> None:
 
     assert closet_service.user_ids == ["user_001"]
     assert user_service.user_ids == ["user_001"]
+    assert like_service.user_ids == ["user_001"]
     assert recommendation_service.calls[0]["closet_items"] == [closet_payload]
+    assert recommendation_service.calls[0]["liked_items"] == [liked_payload]
     assert recommendation_service.calls[0]["user_profile"] == {
         "age_group": "20s",
         "preferred_styles": ["minimal", "casual"],

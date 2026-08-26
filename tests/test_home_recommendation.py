@@ -290,7 +290,7 @@ def test_feed_spreads_the_filled_tiles_across_categories() -> None:
 
 
 def test_feed_does_not_repeat_a_curated_tile() -> None:
-    # 랭킹 결과에는 LLM이 고른 상품도 그대로 들어 있다. 그냥 붙이면 중복된다.
+    # 랭킹 결과에는 LLM 이유가 붙은 상위 상품도 그대로 있다. 그냥 붙이면 중복된다.
     curated_tiles = curated(3)
     also_ranked = [
         {**tile, "reason": None} for tile in curated_tiles
@@ -367,13 +367,25 @@ def build_home(**overrides) -> dict:
         def to_agent_payload(self, item):
             return item
 
+    class StubLikeService:
+        async def list_style_payloads(self, _db, _user_id):
+            return [
+                {
+                    "product_ref": "liked_001",
+                    "source": "musinsa",
+                    "name": "스트릿 팬츠",
+                }
+            ]
+
     class StubUser:
         id = "user_001"
 
     original_user_service = home_api.UserService
     original_closet_service = home_api.ClosetService
+    original_like_service = home_api.LikeService
     home_api.UserService = StubUserService
     home_api.ClosetService = StubClosetService
+    home_api.LikeService = StubLikeService
     try:
         kwargs = {"prompt": "", "refresh_seed": 0, "category": "", "mood": "", "season": ""}
         kwargs.update(overrides)
@@ -381,6 +393,7 @@ def build_home(**overrides) -> dict:
     finally:
         home_api.UserService = original_user_service
         home_api.ClosetService = original_closet_service
+        home_api.LikeService = original_like_service
 
 
 def call_home(**overrides) -> tuple[dict, dict]:
@@ -406,6 +419,16 @@ def call_home(**overrides) -> tuple[dict, dict]:
         def to_agent_payload(self, item):
             return item
 
+    class StubLikeService:
+        async def list_style_payloads(self, _db, _user_id):
+            return [
+                {
+                    "product_ref": "liked_001",
+                    "source": "musinsa",
+                    "name": "스트릿 팬츠",
+                }
+            ]
+
     class StubUser:
         id = "user_001"
 
@@ -428,10 +451,12 @@ def call_home(**overrides) -> tuple[dict, dict]:
     originals = (
         home_api.UserService,
         home_api.ClosetService,
+        home_api.LikeService,
         home_api.RecommendationService,
     )
     home_api.UserService = StubUserService
     home_api.ClosetService = StubClosetService
+    home_api.LikeService = StubLikeService
     home_api.RecommendationService = StubRecommendationService
     try:
         kwargs = {"prompt": "", "refresh_seed": 0, "category": "", "mood": "", "season": ""}
@@ -443,6 +468,7 @@ def call_home(**overrides) -> tuple[dict, dict]:
         (
             home_api.UserService,
             home_api.ClosetService,
+            home_api.LikeService,
             home_api.RecommendationService,
         ) = originals
 
@@ -463,6 +489,12 @@ def test_home_asks_the_workflow_for_the_leftovers() -> None:
     _result, received = call_home()
 
     assert received["return_trace"] is True
+
+
+def test_home_sends_saved_likes_to_the_personalization_ranker() -> None:
+    request = build_home()
+
+    assert request["run_kwargs"]["liked_items"][0]["product_ref"] == "liked_001"
 
 
 def test_home_counts_the_filled_feed() -> None:

@@ -32,6 +32,11 @@ class StubClosetService:
         return item
 
 
+class StubLikeService:
+    async def list_style_payloads(self, _db, _user_id):
+        return []
+
+
 class StubUser:
     id = "user_001"
 
@@ -110,6 +115,7 @@ class ExplodingRecommendationService(StubRecommendationService):
 def stub_dependencies(monkeypatch):
     monkeypatch.setattr(home_api, "UserService", StubUserService)
     monkeypatch.setattr(home_api, "ClosetService", StubClosetService)
+    monkeypatch.setattr(home_api, "LikeService", StubLikeService)
 
 
 def drain(service_class=StubRecommendationService, **overrides) -> list[dict]:
