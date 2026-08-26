@@ -30,6 +30,43 @@ class FakeResult:
         return self._values[0] if self._values else None
 
 
+class FakeMappingResult:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> "FakeMappingResult":
+        return self
+
+    def all(self) -> list[dict]:
+        return list(self._rows)
+
+
+class CatalogLookupDb:
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[object, dict]] = []
+
+    async def execute(self, statement: object, params: dict) -> FakeMappingResult:
+        self.calls.append((statement, params))
+        return FakeMappingResult(self.rows)
+
+
+class StubStyleLikeService(LikeService):
+    def __init__(
+        self,
+        catalog_styles: dict[str, dict] | None = None,
+        closet_styles: dict[str, dict] | None = None,
+    ) -> None:
+        self.catalog_styles = catalog_styles or {}
+        self.closet_styles = closet_styles or {}
+
+    async def _load_catalog_styles(self, db, likes):
+        return self.catalog_styles
+
+    async def _load_closet_styles(self, db, user_id, likes):
+        return self.closet_styles
+
+
 class FakeLikeDb:
     """product_likes 한 테이블만 흉내 낸다.
 
@@ -150,6 +187,166 @@ def test_liking_stores_a_snapshot_of_the_product() -> None:
     assert (like.brand, like.name, like.price) == ("Example Brand", "와이드 슬랙스", 59000)
     assert like.image_url == "https://image.example/slacks.jpg"
     assert len(db.rows) == 1
+
+
+def test_like_snapshot_can_be_sent_to_the_personalization_ranker() -> None:
+    saved = like_row(
+        "user_001",
+        "musinsa_1",
+        name="와이드 슬랙스",
+        brand="Example Brand",
+        category="바지",
+        price=59000,
+        image_url="https://image.example/slacks.jpg",
+        product_url="https://www.musinsa.com/products/1",
+    )
+
+    assert LikeService.to_agent_payload(saved) == {
+        "product_ref": "musinsa_1",
+        "source": "musinsa",
+        "name": "와이드 슬랙스",
+        "image_url": "https://image.example/slacks.jpg",
+        "product_url": "https://www.musinsa.com/products/1",
+    }
+
+
+def test_catalog_style_lookup_batches_all_liked_product_identities() -> None:
+    likes = [
+        like_row(
+            "user_001",
+            "musinsa_1",
+            image_url="https://image.example/1.jpg",
+            product_url="https://www.musinsa.com/products/1",
+        ),
+        like_row(
+            "user_001",
+            "https://www.musinsa.com/products/2",
+            image_url="https://image.example/2.jpg",
+            product_url="https://www.musinsa.com/products/2",
+        ),
+    ]
+    db = CatalogLookupDb(
+        [
+            {
+                "item_id": "musinsa_1",
+                "name": "그래픽 셔츠",
+                "color": "blue",
+                "material": "cotton",
+                "fit": "oversized",
+                "pattern": "graphic",
+                "mood": "street",
+                "season": "summer",
+                "image_url": "https://image.example/1.jpg",
+                "product_url": "https://www.musinsa.com/products/1",
+            }
+        ]
+    )
+
+    styles = asyncio.run(LikeService()._load_catalog_styles(db, likes))
+
+    assert len(db.calls) == 1
+    assert set(db.calls[0][1]["item_ids"]) == {
+        "musinsa_1",
+        "https://www.musinsa.com/products/1",
+        "https://image.example/1.jpg",
+        "https://www.musinsa.com/products/2",
+        "https://image.example/2.jpg",
+    }
+    assert db.calls[0][1]["product_urls"] == db.calls[0][1]["item_ids"]
+    assert db.calls[0][1]["image_urls"] == db.calls[0][1]["item_ids"]
+    assert styles["musinsa_1"]["sense_of_season"] == "summer"
+    assert styles["https://www.musinsa.com/products/1"]["fit"] == "oversized"
+    assert styles["https://image.example/1.jpg"]["mood"] == "street"
+
+
+def test_saved_likes_are_enriched_with_style_only() -> None:
+    musinsa_like = like_row(
+        "user_001",
+        "musinsa_1",
+        name="저장 당시 이름",
+        brand="Not Used",
+        category="상의",
+        price=99000,
+    )
+    closet_like = ProductLike(
+        id="like-closet_1",
+        user_id="user_001",
+        product_ref="closet_1",
+        source="closet",
+        name="내 옷",
+        brand="Not Used Either",
+        category="아우터",
+        price=120000,
+        created_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    service = StubStyleLikeService(
+        catalog_styles={
+            "musinsa_1": {
+                "name": "카탈로그 상품명",
+                "color": "blue",
+                "material": "cotton",
+                "fit": "oversized",
+                "pattern": "graphic",
+                "mood": "street",
+                "sense_of_season": "summer",
+            }
+        },
+        closet_styles={
+            "closet_1": {
+                "name": "내 옷장 상품명",
+                "color": "black",
+                "material": "wool",
+                "fit": "regular",
+                "pattern": "solid",
+                "mood": "minimal",
+                "sense_of_season": "winter",
+            }
+        },
+    )
+    db = FakeLikeDb([musinsa_like, closet_like])
+
+    payloads = asyncio.run(service.list_style_payloads(db, "user_001"))
+
+    by_ref = {item["product_ref"]: item for item in payloads}
+    assert by_ref["musinsa_1"] == {
+        "product_ref": "musinsa_1",
+        "source": "musinsa",
+        "name": "카탈로그 상품명",
+        "image_url": None,
+        "product_url": None,
+        "color": "blue",
+        "material": "cotton",
+        "fit": "oversized",
+        "pattern": "graphic",
+        "mood": "street",
+        "sense_of_season": "summer",
+    }
+    assert by_ref["closet_1"]["mood"] == "minimal"
+    assert by_ref["closet_1"]["sense_of_season"] == "winter"
+    assert "brand" not in by_ref["musinsa_1"]
+    assert "category" not in by_ref["musinsa_1"]
+    assert "price" not in by_ref["musinsa_1"]
+
+
+def test_missing_catalog_style_falls_back_to_saved_product_name() -> None:
+    saved = like_row(
+        "user_001",
+        "removed_product",
+        name="블루 오버핏 스트릿 셔츠",
+    )
+    db = FakeLikeDb([saved])
+
+    payloads = asyncio.run(StubStyleLikeService().list_style_payloads(db, "user_001"))
+
+    assert payloads == [
+        {
+            "product_ref": "removed_product",
+            "source": "musinsa",
+            "name": "블루 오버핏 스트릿 셔츠",
+            "image_url": None,
+            "product_url": None,
+        }
+    ]
 
 
 def test_liking_the_same_product_twice_keeps_one_row() -> None:

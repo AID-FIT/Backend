@@ -46,6 +46,29 @@ class FakeRagService:
         return {"items": self.items, "message": "success" if self.items else "검색 결과가 없습니다."}
 
 
+class NoopStyleEmbeddingService:
+    async def embed_items(self, items: list[dict]) -> list[None]:
+        return [None for _item in items]
+
+
+class MaterialSemanticEmbeddingService:
+    def __init__(self) -> None:
+        self.calls: list[list[dict]] = []
+
+    async def embed_items(self, items: list[dict]) -> list[list[float]]:
+        self.calls.append(items)
+        vectors = []
+        for item in items:
+            material = str(item.get("material") or "").lower()
+            vectors.append([1.0, 0.0] if material in {"cotton", "면"} else [0.0, 1.0])
+        return vectors
+
+
+class FailingStyleEmbeddingService:
+    async def embed_items(self, items: list[dict]) -> list[list[float]]:
+        raise RuntimeError("embedding unavailable")
+
+
 class EmptyThenResultRagService:
     # Simulates a retry path where fallback retrieval recovers results.
     def __init__(self) -> None:
@@ -208,11 +231,13 @@ def build_pipeline(
     vlm_service: FakeVlmService | None = None,
     rag_service: FakeRagService | EmptyThenResultRagService | None = None,
     llm_service: FakeLlmService | None = None,
+    style_embedding_service=None,
 ) -> tuple[AidFitAgentPipeline, FakeVlmService, FakeRagService | EmptyThenResultRagService, FakeLlmService]:
     vlm = vlm_service or FakeVlmService()
     rag = rag_service or FakeRagService()
     llm = llm_service or FakeLlmService()
-    return AidFitAgentPipeline(AgentNodes(vlm, rag, llm)), vlm, rag, llm
+    style_embeddings = style_embedding_service or NoopStyleEmbeddingService()
+    return AidFitAgentPipeline(AgentNodes(vlm, rag, llm, style_embeddings)), vlm, rag, llm
 
 
 def test_first_text_only_turn_runs_refiner_skips_vlm_and_routes_to_musinsa() -> None:
@@ -532,6 +557,185 @@ def test_ranking_prefers_user_profile_mood_when_base_scores_match() -> None:
     assert llm.calls[0]["ranked_items"][0]["item_id"] == "minimal_item"
 
 
+def test_ranking_prefers_a_candidate_similar_to_liked_products() -> None:
+    items = [
+        {
+            **fake_item("unrelated", final_score=0.51, category="아우터", mood="formal"),
+            "name": "베이지 슬림 솔리드 포멀 코트",
+            "brand": "Other Brand",
+            "price": 249000,
+            "color": "beige",
+            "fit": "slim",
+            "pattern": "solid",
+        },
+        {
+            **fake_item("liked_match", final_score=0.50, category="바지", mood="street"),
+            "name": "블루 와이드 그래픽 스트릿 팬츠",
+            "brand": "Taste Brand",
+            "price": 62000,
+            "color": "blue",
+            "fit": "wide",
+            "pattern": "graphic",
+        },
+    ]
+    liked_items = [
+        {
+            "product_ref": "previous_like",
+            "source": "musinsa",
+            # 상업 속성은 unrelated와 같고, 스타일만 liked_match와 같다.
+            "name": "블루 와이드 그래픽 스트릿 셔츠",
+            "brand": "Other Brand",
+            "category": "아우터",
+            "price": 249000,
+        }
+    ]
+    pipeline, _, _, llm = build_pipeline(rag_service=FakeRagService(items=items))
+
+    asyncio.run(
+        pipeline.run(
+            query="오늘 입을 옷 추천해줘",
+            user_id="user_001",
+            liked_items=liked_items,
+        )
+    )
+
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "liked_match"
+
+
+def test_ranking_uses_enriched_liked_product_style_metadata() -> None:
+    items = [
+        {
+            **fake_item("unrelated", final_score=0.51, mood="formal"),
+            "name": "후보 A",
+            "color": "beige",
+            "material": "wool",
+            "fit": "slim",
+            "pattern": "solid",
+            "sense_of_season": "winter",
+        },
+        {
+            **fake_item("liked_match", final_score=0.50, mood="street"),
+            "name": "후보 B",
+            "color": "blue",
+            "material": "cotton",
+            "fit": "wide",
+            "pattern": "graphic",
+            "sense_of_season": "summer",
+        },
+    ]
+    liked_items = [
+        {
+            "product_ref": "previous_like",
+            # 이름만으로는 스타일을 알 수 없고, 조회해 온 속성으로만 일치한다.
+            "name": "좋아요 상품",
+            "color": "blue",
+            "material": "cotton",
+            "fit": "wide",
+            "pattern": "graphic",
+            "mood": "street",
+            "sense_of_season": "summer",
+        }
+    ]
+    pipeline, _, _, llm = build_pipeline(rag_service=FakeRagService(items=items))
+
+    asyncio.run(
+        pipeline.run(
+            query="오늘 입을 옷 추천해줘",
+            user_id="user_001",
+            liked_items=liked_items,
+        )
+    )
+
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "liked_match"
+
+
+def test_ranking_understands_semantically_equivalent_style_values() -> None:
+    items = [
+        {
+            **fake_item("unrelated", final_score=0.51),
+            "name": "후보 A",
+            "material": "wool",
+        },
+        {
+            **fake_item("semantic_match", final_score=0.50),
+            "name": "후보 B",
+            "material": "면",
+        },
+    ]
+    style_embeddings = MaterialSemanticEmbeddingService()
+    pipeline, _, _, llm = build_pipeline(
+        rag_service=FakeRagService(items=items),
+        style_embedding_service=style_embeddings,
+    )
+
+    asyncio.run(
+        pipeline.run(
+            query="오늘 입을 옷 추천해줘",
+            user_id="user_001",
+            liked_items=[
+                {
+                    "product_ref": "previous_like",
+                    "name": "좋아요 상품",
+                    "material": "cotton",
+                }
+            ],
+        )
+    )
+
+    assert len(style_embeddings.calls) == 1
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "semantic_match"
+
+
+def test_embedding_failure_falls_back_to_structured_like_similarity() -> None:
+    items = [
+        {
+            **fake_item("unrelated", final_score=0.51, color="beige"),
+            "name": "후보 A",
+        },
+        {
+            **fake_item("structured_match", final_score=0.50, color="blue"),
+            "name": "후보 B",
+        },
+    ]
+    pipeline, _, _, llm = build_pipeline(
+        rag_service=FakeRagService(items=items),
+        style_embedding_service=FailingStyleEmbeddingService(),
+    )
+
+    asyncio.run(
+        pipeline.run(
+            query="오늘 입을 옷 추천해줘",
+            user_id="user_001",
+            liked_items=[{"product_ref": "previous_like", "color": "blue"}],
+        )
+    )
+
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "structured_match"
+
+
+def test_repeated_like_pattern_strengthens_but_caps_the_bonus() -> None:
+    nodes = AgentNodes()
+    candidate = {
+        **fake_item("candidate", category="바지", mood="street", color="blue"),
+        "name": "블루 와이드 스트릿 팬츠",
+        "fit": "wide",
+    }
+    one_like = {
+        "product_ref": "like_1",
+        "name": "블루 와이드 스트릿 셔츠",
+    }
+    similar_likes = [
+        {**one_like, "product_ref": f"like_{index}"}
+        for index in range(1, 11)
+    ]
+
+    one_bonus = nodes._liked_similarity_bonus(candidate, [one_like])
+    repeated_bonus = nodes._liked_similarity_bonus(candidate, similar_likes)
+
+    assert repeated_bonus > one_bonus > 0
+    assert repeated_bonus <= 0.20
+
+
 def test_ranking_boosts_closet_metadata_matches() -> None:
     items = [
         fake_item("blue_winter", final_score=0.5, color="blue", mood="street", sense_of_season="winter"),
@@ -560,16 +764,207 @@ def test_ranking_boosts_closet_metadata_matches() -> None:
     assert llm.calls[0]["use_closet_style"] is True
 
 
-def test_duplicate_closet_items_do_not_multiply_the_ranker_bonus() -> None:
+def test_repeated_closet_style_strengthens_taste_but_caps_the_bonus() -> None:
     nodes = AgentNodes()
-    candidate = fake_item("candidate", color="black", mood="street", sense_of_season="summer")
-    closet_item = {"color": "black", "mood": "street", "sense_of_season": "summer"}
+    candidate = fake_item(
+        "candidate",
+        category="바지",
+        color="black",
+        mood="street",
+        sense_of_season="summer",
+    )
+    closet_item = {
+        "category": "상의",
+        "color": "black",
+        "mood": "street",
+        "sense_of_season": "summer",
+    }
 
-    once = nodes._closet_metadata_bonus(candidate, [closet_item])
-    repeated = nodes._closet_metadata_bonus(candidate, [closet_item] * 20)
+    once = nodes._closet_personalization_bonus(candidate, [closet_item])
+    repeated = nodes._closet_personalization_bonus(candidate, [closet_item] * 20)
 
-    assert repeated == once
+    assert repeated > once > 0
     assert repeated <= 0.20
+
+
+def test_closet_semantic_similarity_understands_material_synonyms() -> None:
+    items = [
+        {
+            **fake_item("unrelated", final_score=0.51, category="바지"),
+            "name": "후보 A",
+            "material": "wool",
+        },
+        {
+            **fake_item("semantic_match", final_score=0.50, category="바지"),
+            "name": "후보 B",
+            "material": "면",
+        },
+    ]
+    style_embeddings = MaterialSemanticEmbeddingService()
+    pipeline, _, _, llm = build_pipeline(
+        rag_service=FakeRagService(items=items),
+        style_embedding_service=style_embeddings,
+    )
+
+    asyncio.run(
+        pipeline.run(
+            query="바지 추천해줘",
+            user_id="user_001",
+            closet_items=[
+                {
+                    "closet_item_id": "closet_001",
+                    "category": "상의",
+                    "name": "내 셔츠",
+                    "material": "cotton",
+                }
+            ],
+        )
+    )
+
+    assert len(style_embeddings.calls) == 1
+    assert len(style_embeddings.calls[0]) == 3
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "semantic_match"
+
+
+def test_complementary_category_compatibility_beats_same_category_similarity() -> None:
+    items = [
+        {
+            **fake_item("same_category", final_score=0.51, category="상의"),
+            "name": "후보 상의",
+            "color": "black",
+            "mood": "street",
+            "sense_of_season": "summer",
+        },
+        {
+            **fake_item("compatible_pants", final_score=0.50, category="바지"),
+            "name": "후보 바지",
+            "color": "black",
+            "mood": "street",
+            "sense_of_season": "summer",
+        },
+    ]
+    pipeline, _, _, llm = build_pipeline(rag_service=FakeRagService(items=items))
+
+    asyncio.run(
+        pipeline.run(
+            query="옷 추천해줘",
+            user_id="user_001",
+            closet_items=[
+                {
+                    "closet_item_id": "closet_001",
+                    "category": "상의",
+                    "color": "black",
+                    "mood": "street",
+                    "sense_of_season": "summer",
+                }
+            ],
+        )
+    )
+
+    ranked_ids = [item["item_id"] for item in llm.calls[0]["ranked_items"]]
+    assert ranked_ids == ["compatible_pants", "same_category"]
+
+
+def test_closet_personalization_does_not_filter_a_matching_product_url() -> None:
+    product_url = "https://www.musinsa.com/products/already-owned"
+    candidate = {
+        **fake_item("already_owned", final_score=0.50, category="상의"),
+        "product_url": product_url,
+        "color": "black",
+        "mood": "street",
+    }
+    pipeline, _, _, llm = build_pipeline(
+        rag_service=FakeRagService(items=[candidate])
+    )
+
+    asyncio.run(
+        pipeline.run(
+            query="상의 추천해줘",
+            user_id="user_001",
+            closet_items=[
+                {
+                    "closet_item_id": "closet_001",
+                    "category": "상의",
+                    "product_url": product_url,
+                    "color": "black",
+                    "mood": "street",
+                }
+            ],
+        )
+    )
+
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "already_owned"
+
+
+def test_coordination_request_gives_more_weight_to_closet_compatibility() -> None:
+    nodes = AgentNodes()
+    candidate = fake_item(
+        "candidate",
+        category="바지",
+        color="black",
+        mood="street",
+        sense_of_season="summer",
+    )
+    closet = [
+        {
+            "category": "상의",
+            "color": "black",
+            "mood": "street",
+            "sense_of_season": "summer",
+        }
+    ]
+
+    direct = nodes._closet_personalization_bonus(candidate, closet)
+    coordination = nodes._closet_personalization_bonus(
+        candidate,
+        closet,
+        request_mode="coordination",
+    )
+
+    assert 0 < direct < coordination <= 0.20
+
+
+def test_closet_embedding_failure_falls_back_to_structured_compatibility() -> None:
+    items = [
+        fake_item(
+            "unrelated",
+            final_score=0.51,
+            category="바지",
+            color="pink",
+            mood="formal",
+            sense_of_season="winter",
+        ),
+        fake_item(
+            "structured_match",
+            final_score=0.50,
+            category="바지",
+            color="black",
+            mood="street",
+            sense_of_season="summer",
+        ),
+    ]
+    pipeline, _, _, llm = build_pipeline(
+        rag_service=FakeRagService(items=items),
+        style_embedding_service=FailingStyleEmbeddingService(),
+    )
+
+    asyncio.run(
+        pipeline.run(
+            query="바지 추천해줘",
+            user_id="user_001",
+            closet_items=[
+                {
+                    "closet_item_id": "closet_001",
+                    "category": "상의",
+                    "color": "black",
+                    "mood": "street",
+                    "sense_of_season": "summer",
+                }
+            ],
+        )
+    )
+
+    assert llm.calls[0]["ranked_items"][0]["item_id"] == "structured_match"
 
 
 def test_photo_compatibility_is_applied_in_the_ranker() -> None:

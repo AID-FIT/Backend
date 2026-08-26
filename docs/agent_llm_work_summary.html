@@ -510,14 +510,16 @@
       <p>
         RAG 결과가 있으면 <code>style_ranker_node</code>가 다시 정렬합니다.
         기본 점수는 <code>final_score</code>, <code>metadata_score</code>, <code>similarity_score</code> 순서로 사용하고,
-        <code>use_closet_style</code> 값에 따라 추가 보너스가 달라집니다.
+        인증 사용자의 저장된 좋아요와 후보 상품의 콘텐츠 유사도를 공통 보너스로 더합니다.
+        옷장·프로필 보너스는 <code>use_closet_style</code> 값에 따라 달라집니다.
       </p>
       <table>
         <thead><tr><th>상황</th><th>랭킹 방식</th></tr></thead>
         <tbody>
-          <tr><td><code>use_closet_style=true</code></td><td>사용자 선호 스타일과 옷장 아이템 메타데이터가 후보 상품과 겹치면 점수를 더합니다.</td></tr>
+          <tr><td>좋아요 유사도</td><td>좋아요의 상품 ID·상품 URL·이미지 URL로 <code>product_vectors</code> 또는 사용자 소유 <code>closet_items</code>를 일괄 조회합니다. 색상·소재·핏·패턴·무드·계절만으로 스타일 전용 문장을 만들고 Gemini의 <code>SEMANTIC_SIMILARITY</code> 임베딩 70%와 명시적 속성 일치 30%를 결합합니다. 조회되지 않은 상품은 저장된 상품명을 폴백으로 사용하며, 브랜드·카테고리·가격은 임베딩과 점수 모두에서 제외합니다. 가장 가까운 좋아요와 상위 3개 스타일 패턴을 합산해 최대 0.20을 더하고, 임베딩 장애 시에는 속성 비교만으로 계속 추천합니다.</td></tr>
+          <tr><td><code>use_closet_style=true</code></td><td>옷장을 사용자 취향으로 보고 후보별 상위 3개 스타일 유사도를 계산합니다. 옷장 취향 55%와 상의–바지·아우터–상의처럼 조합 가능한 카테고리의 코디 호환성 45%를 결합해 최대 0.20을 더합니다. 코디 요청에서는 25%/75%로 호환성을 더 중시합니다. 스타일 의미 임베딩과 색상·계절·소재·무드 조화 규칙을 함께 사용하고, 별도의 동일·유사 상품 제거 또는 감점은 적용하지 않습니다.</td></tr>
           <tr><td><code>use_closet_style=false</code></td><td>기존 옷장 취향보다 현재 query와 후보 상품 메타데이터의 직접 관련성을 더 봅니다.</td></tr>
-          <tr><td>이전 RAG 결과 재사용</td><td>retrieval planner LLM이 이미 현재 후속 질문에 맞게 선택·정렬한 순서를 유지합니다.</td></tr>
+          <tr><td>이전 RAG 결과 재사용</td><td>“더 저렴한 것” 같은 현재 후속 지시가 장기 취향보다 우선하도록 retrieval planner가 선택·정렬한 순서를 유지합니다.</td></tr>
           <tr><td>RAG 결과가 없음</td><td><code>style</code>, <code>season</code> 필터를 제거하고 <code>top_k</code>를 최소 20으로 넓혀 1회 재검색합니다.</td></tr>
           <tr><td>fallback 후에도 결과 없음</td><td><code>empty</code> 응답을 반환합니다.</td></tr>
         </tbody>
@@ -537,20 +539,21 @@
           <tr><td><code>compose_general_chat()</code></td><td>일반 대화 요청에 RAG 없이 답변합니다.</td><td><code>GeneralChatAnswer</code> → <code>AgentResponse</code></td></tr>
           <tr><td><code>refine_query()</code></td><td>대화 문맥과 VLM 속성을 합쳐 독립적인 검색 query를 만듭니다.</td><td><code>QueryRefinement</code></td></tr>
           <tr><td><code>plan_retrieval()</code></td><td>이전 후보 재사용/새 검색과 검색 대상을 결정합니다.</td><td><code>RetrievalPlan</code> + 실제 candidate ref 검증</td></tr>
-          <tr><td><code>compose_recommendation()</code></td><td>검색 후보만 사용해 추천 문장과 스타일 가이드를 생성합니다.</td><td><code>AgentResponse</code> + candidate 재매칭</td></tr>
+          <tr><td><code>compose_recommendation()</code></td><td>서버가 순서를 확정한 상품에 추천 이유와 스타일 가이드를 생성합니다.</td><td><code>AgentResponse</code> + 서버 순서 재조립</td></tr>
         </tbody>
       </table>
       <ul>
         <li>모든 Gemini 판단 호출은 <code>responseMimeType: application/json</code>과 단계별 <code>responseSchema</code>를 사용합니다.</li>
-        <li>이전 RAG 후보는 planner 입력에 최대 20개, 최종 추천 생성에는 상위 후보 최대 8개를 전달합니다.</li>
-        <li>최종 추천은 최대 5개로 제한하며, 후보에 없는 상품명·가격·URL은 응답에 들어가지 않습니다.</li>
+        <li>이전 RAG 후보는 planner 입력에 최대 20개를 전달합니다. 최종 생성에는 코드 랭커가 확정한 상품만 전달합니다(채팅 기본 5개, 홈 8개).</li>
+        <li>Gemini가 상품을 누락하거나 재배치해도 서버가 원래 랭킹 순서로 복원하며, 후보에 없는 상품명·가격·URL은 응답에 들어가지 않습니다.</li>
         <li>일반 채팅 응답도 기존 공개 계약을 유지하기 위해 빈 추천 배열을 가진 <code>AgentResponse</code>로 반환합니다.</li>
       </ul>
       <div class="code-block">LLM intent JSON -&gt; IntentClassification -&gt; LangGraph 분기
 VLM + history + query -&gt; QueryRefinement -&gt; resolved_query
 previous RAG + context -&gt; RetrievalPlan -&gt; reuse 또는 retrieve
-ranked_items -&gt; Gemini recommendation JSON
-  -&gt; candidate item_id/image_url 재매칭
+ranked_items 상위 N개 확정 -&gt; Gemini 추천 이유 JSON
+  -&gt; candidate item_id/image_url로 이유만 재매칭
+  -&gt; 서버 랭킹 순서로 재조립
   -&gt; AgentResponse 검증 -&gt; Frontend 응답</div>
     </section>
 

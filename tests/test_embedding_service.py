@@ -3,7 +3,11 @@ import asyncio
 import httpx
 import pytest
 
-from app.services.embedding_service import EmbeddingError, EmbeddingService
+from app.services.embedding_service import (
+    TASK_SEMANTIC_SIMILARITY,
+    EmbeddingError,
+    EmbeddingService,
+)
 
 
 class FlakyService(EmbeddingService):
@@ -13,8 +17,10 @@ class FlakyService(EmbeddingService):
         super().__init__()
         self.outcomes = outcomes
         self.attempts = 0
+        self.task_types: list[str] = []
 
     async def _embed_batch_once(self, texts, task_type):
+        self.task_types.append(task_type)
         outcome = self.outcomes[self.attempts]
         self.attempts += 1
         if isinstance(outcome, Exception):
@@ -67,6 +73,15 @@ def test_empty_input_skips_the_api_entirely() -> None:
 
     assert asyncio.run(service.embed_batch([])) == []
     assert service.attempts == 0
+
+
+def test_style_similarity_uses_the_symmetric_embedding_task() -> None:
+    service = FlakyService([[[0.1, 0.2]]])
+
+    result = asyncio.run(service.embed_for_similarity(["blue cotton street"]))
+
+    assert result == [[0.1, 0.2]]
+    assert service.task_types == [TASK_SEMANTIC_SIMILARITY]
 
 
 def test_network_errors_are_marked_retryable(monkeypatch) -> None:

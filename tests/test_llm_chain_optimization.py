@@ -314,7 +314,7 @@ def test_recommendation_defaults_to_the_chat_cap() -> None:
     assert len(response["recommendations"]) == MAX_RECOMMENDATIONS
 
 
-def test_prompt_carries_the_target_count_and_enough_candidates() -> None:
+def test_prompt_carries_only_the_server_ranked_final_candidates() -> None:
     service = RecordingLlmService()
 
     payload = service._build_gemini_payload(
@@ -323,5 +323,6 @@ def test_prompt_carries_the_target_count_and_enough_candidates() -> None:
     prompt = json.loads(payload["contents"][0]["parts"][0]["text"])
 
     assert prompt["target_recommendation_count"] == 7
-    # 7개를 고르라면서 후보를 8개만 주면 사실상 선택지가 없다.
-    assert len(prompt["candidate_items"]) >= 14
+    assert [item["item_id"] for item in prompt["candidate_items"]] == [
+        f"item_{index}" for index in range(7)
+    ]

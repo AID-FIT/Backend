@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.models import ChatConversation, ChatMessage, ClosetItem
 from app.services.closet_service import ClosetService
+from app.services.like_service import LikeService
 from app.services.recommendation_service import RecommendationService
 from app.services.user_service import UserService, to_agent_profile
 
@@ -46,10 +47,12 @@ class ChatService:
         closet_service: ClosetService | None = None,
         candidate_cache_ttl_seconds: int | None = None,
         user_service: UserService | None = None,
+        like_service: LikeService | None = None,
     ) -> None:
         self.recommendation_service = recommendation_service or RecommendationService()
         self.closet_service = closet_service or ClosetService()
         self.user_service = user_service or UserService()
+        self.like_service = like_service or LikeService()
         self.candidate_cache_ttl_seconds = (
             settings.rag_candidate_cache_ttl_seconds
             if candidate_cache_ttl_seconds is None
@@ -142,6 +145,7 @@ class ChatService:
         history = await self._load_recent_messages(db, conversation_id, DEFAULT_HISTORY_LIMIT)
         previous_context = self._extract_previous_agent_context(history, scope_key)
         closet_payload = [self.closet_service.to_agent_payload(item) for item in selected_items]
+        liked_payload = await self.like_service.list_style_payloads(db, user_id)
         preference = await self.user_service.get_preference_for_user_id(db, user_id)
         user_profile = to_agent_profile(preference)
 
@@ -180,6 +184,7 @@ class ChatService:
             user_id=user_id,
             image_urls=normalized_image_urls,
             closet_items=closet_payload,
+            liked_items=liked_payload,
             user_profile=user_profile,
             chat_history=self._serialize_history(history),
             previous_rag_results=previous_context.get("candidate_pool", []),

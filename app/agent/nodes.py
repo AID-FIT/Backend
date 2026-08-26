@@ -19,10 +19,17 @@ from app.schemas.recommendation import AgentResponse
 from app.services.catalog_matching import (
     infer_query_intents,
     is_vague_search_request,
+    normalize_category,
+    season_set,
     split_tokens,
 )
 from app.services.llm_service import LlmService
 from app.services.rag_service import RagService
+from app.services.style_embedding_service import (
+    StyleEmbeddingService,
+    cosine_similarity,
+    get_style_embedding_service,
+)
 from app.services.target_category import query_names_a_category
 from app.services.vlm_service import VlmService
 
@@ -31,8 +38,55 @@ logger = logging.getLogger(__name__)
 
 # 개인화는 이 단계에서 한 번만 적용하며 각 신호의 최대 영향력을 고정한다.
 PREFERRED_STYLE_MAX_BONUS = 0.15
-CLOSET_COMPATIBILITY_MAX_BONUS = 0.20
+CLOSET_PERSONALIZATION_MAX_BONUS = 0.20
 REFERENCE_COMPATIBILITY_MAX_BONUS = 0.20
+LIKED_ITEM_SIMILARITY_MAX_BONUS = 0.20
+STYLE_PROFILE_DEPTH = 3
+LIKED_ITEM_SEMANTIC_WEIGHT = 0.70
+LIKED_ITEM_STRUCTURED_WEIGHT = 0.30
+CLOSET_TASTE_WEIGHT = 0.55
+CLOSET_COMPATIBILITY_WEIGHT = 0.45
+COORDINATION_CLOSET_TASTE_WEIGHT = 0.25
+COORDINATION_CLOSET_COMPATIBILITY_WEIGHT = 0.75
+OUTFIT_SEMANTIC_WEIGHT = 0.60
+OUTFIT_STRUCTURED_WEIGHT = 0.40
+
+# Same-category items describe taste, while these cross-category pairs describe
+# whether a new item can take part in an outfit with something already owned.
+COMPLEMENTARY_CATEGORIES = {
+    "상의": {"바지", "원피스/스커트", "아우터", "신발", "가방", "모자"},
+    "바지": {"상의", "아우터", "신발", "가방", "모자"},
+    "원피스/스커트": {"상의", "아우터", "신발", "가방", "모자"},
+    "아우터": {"상의", "바지", "원피스/스커트", "신발", "가방", "모자"},
+    "신발": {"상의", "바지", "원피스/스커트", "아우터", "가방", "모자"},
+    "가방": {"상의", "바지", "원피스/스커트", "아우터", "신발", "모자"},
+    "모자": {"상의", "바지", "원피스/스커트", "아우터", "신발", "가방"},
+}
+NEUTRAL_COLORS = {
+    "black",
+    "white",
+    "gray",
+    "charcoal",
+    "ivory",
+    "beige",
+    "navy",
+    "brown",
+}
+COLOR_HARMONY_PAIRS = {
+    frozenset(("blue", "white")),
+    frozenset(("blue", "beige")),
+    frozenset(("navy", "white")),
+    frozenset(("brown", "beige")),
+    frozenset(("khaki", "white")),
+    frozenset(("olive", "ivory")),
+    frozenset(("red", "navy")),
+    frozenset(("pink", "gray")),
+}
+ADJACENT_SEASON_PAIRS = {
+    frozenset(("spring", "summer")),
+    frozenset(("spring", "fall")),
+    frozenset(("fall", "winter")),
+}
 
 
 def build_error(code: str, message: str, retryable: bool, source: str) -> dict[str, Any]:
@@ -82,10 +136,14 @@ class AgentNodes:
         vlm_service: VlmService | None = None,
         rag_service: RagService | None = None,
         llm_service: LlmService | None = None,
+        style_embedding_service: StyleEmbeddingService | None = None,
     ) -> None:
         self.vlm_service = vlm_service or VlmService()
         self.rag_service = rag_service or RagService()
         self.llm_service = llm_service or LlmService()
+        self.style_embedding_service = (
+            style_embedding_service or get_style_embedding_service()
+        )
 
     async def input_validation_node(self, state: AgentState) -> AgentState:
         # Fail fast before calling any external AI service.
@@ -147,6 +205,18 @@ class AgentNodes:
                     "agent",
                 )
                 return state
+
+        liked_items = state.get("liked_items", [])
+        if not isinstance(liked_items, list) or any(
+            not isinstance(item, dict) for item in liked_items
+        ):
+            state["error"] = build_error(
+                "INVALID_LIKED_ITEMS",
+                "좋아요 상품 형식이 올바르지 않습니다.",
+                False,
+                "agent",
+            )
+            return state
 
         return state
 
@@ -577,9 +647,31 @@ class AgentNodes:
             # The planner's selected refs are already ordered for the follow-up.
             state["ranked_items"] = list(state.get("rag_results", []))
         else:
+            candidates = state.get("rag_results", [])
+            liked_items = state.get("liked_items", [])
+            closet_items = (
+                state.get("closet_items", [])
+                if state.get("use_closet_style", True)
+                else []
+            )
+            (
+                candidate_features,
+                liked_features,
+                closet_features,
+            ) = await self._prepare_personalization_style_features(
+                candidates,
+                liked_items,
+                closet_items,
+            )
             ranked = sorted(
-                state.get("rag_results", []),
-                key=lambda item: self._ranking_score(item, state),
+                candidates,
+                key=lambda item: self._ranking_score(
+                    item,
+                    state,
+                    liked_features,
+                    item_features=candidate_features[id(item)],
+                    closet_features=closet_features,
+                ),
                 reverse=True,
             )
             if state.get("diversify_by_category"):
@@ -606,7 +698,14 @@ class AgentNodes:
                     del buckets[category]
         return spread
 
-    def _ranking_score(self, item: dict[str, Any], state: AgentState | None = None) -> float:
+    def _ranking_score(
+        self,
+        item: dict[str, Any],
+        state: AgentState | None = None,
+        liked_features: list[dict[str, Any]] | None = None,
+        item_features: dict[str, Any] | None = None,
+        closet_features: list[dict[str, Any]] | None = None,
+    ) -> float:
         score = self._base_ranking_score(item)
         if state is None:
             return score
@@ -616,11 +715,23 @@ class AgentNodes:
             state.get("vlm_items") or [],
             state.get("request_mode", "direct"),
         )
+        score += self._liked_similarity_bonus(
+            item,
+            state.get("liked_items") or [],
+            liked_features=liked_features,
+            item_features=item_features,
+        )
 
         # Closet-style mode favors user taste and owned-item compatibility.
         if state.get("use_closet_style", True):
             score += self._preferred_style_bonus(item, state.get("user_profile") or {})
-            score += self._closet_metadata_bonus(item, state.get("closet_items") or [])
+            score += self._closet_personalization_bonus(
+                item,
+                state.get("closet_items") or [],
+                item_features=item_features,
+                closet_features=closet_features,
+                request_mode=state.get("request_mode", "direct"),
+            )
         else:
             score += self._query_relevance_bonus(item, state.get("resolved_query") or state.get("query", ""))
         return score
@@ -646,35 +757,349 @@ class AgentNodes:
         matched_ratio = len(preferred_styles & item_terms) / len(preferred_styles)
         return PREFERRED_STYLE_MAX_BONUS * matched_ratio
 
-    def _closet_metadata_bonus(self, item: dict[str, Any], closet_items: list[dict[str, Any]]) -> float:
+    def _liked_similarity_bonus(
+        self,
+        item: dict[str, Any],
+        liked_items: list[dict[str, Any]],
+        *,
+        liked_features: list[dict[str, Any]] | None = None,
+        item_features: dict[str, Any] | None = None,
+    ) -> float:
+        """Score only style similarity to the user's saved likes.
+
+        The strongest match represents a user's distinct taste cluster, while
+        the mean of the top matches makes repeated preferences more influential.
+        A long like list cannot push the score past the fixed cap.
+        """
+        if not liked_items:
+            return 0.0
+
+        prepared_likes = liked_features or [
+            self._liked_item_features(liked_item) for liked_item in liked_items
+        ]
+        candidate = item_features or self._liked_item_features(item)
+        similarities = sorted(
+            (
+                self._liked_item_pair_similarity(candidate, liked_item)
+                for liked_item in prepared_likes
+            ),
+            reverse=True,
+        )
+        if not similarities or similarities[0] <= 0:
+            return 0.0
+
+        profile_similarity = self._top_style_profile_similarity(similarities)
+        return min(
+            LIKED_ITEM_SIMILARITY_MAX_BONUS * profile_similarity,
+            LIKED_ITEM_SIMILARITY_MAX_BONUS,
+        )
+
+    async def _prepare_personalization_style_features(
+        self,
+        candidates: list[dict[str, Any]],
+        liked_items: list[dict[str, Any]],
+        closet_items: list[dict[str, Any]],
+    ) -> tuple[
+        dict[int, dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        candidate_features = {
+            id(item): self._liked_item_features(item) for item in candidates
+        }
+        liked_features = [self._liked_item_features(item) for item in liked_items]
+        closet_features = [self._liked_item_features(item) for item in closet_items]
+        if not candidates or not (liked_items or closet_items):
+            return candidate_features, liked_features, closet_features
+
+        try:
+            vectors = await self.style_embedding_service.embed_items(
+                [*candidates, *liked_items, *closet_items]
+            )
+            if len(vectors) != len(candidates) + len(liked_items) + len(closet_items):
+                raise ValueError("style embedding count does not match input count")
+        except Exception:
+            # Personalization is optional. An embedding quota/network failure must
+            # not turn an otherwise valid recommendation into a failed request.
+            logger.warning(
+                "personalization style embedding failed; using structured similarity",
+                exc_info=True,
+            )
+            return candidate_features, liked_features, closet_features
+
+        candidate_count = len(candidates)
+        liked_end = candidate_count + len(liked_items)
+        for item, vector in zip(candidates, vectors[:candidate_count], strict=True):
+            candidate_features[id(item)]["style_embedding"] = vector
+        for features, vector in zip(
+            liked_features,
+            vectors[candidate_count:liked_end],
+            strict=True,
+        ):
+            features["style_embedding"] = vector
+        for features, vector in zip(
+            closet_features,
+            vectors[liked_end:],
+            strict=True,
+        ):
+            features["style_embedding"] = vector
+        return candidate_features, liked_features, closet_features
+
+    def _liked_item_features(self, item: dict[str, Any]) -> dict[str, Any]:
+        # Recommendation entry points enrich likes from product_vectors/closet_items.
+        # The saved name is still inferred as a fallback for missing catalog rows.
+        # Brand, category, and price never become part of this taste score.
+        style_intents = infer_query_intents(
+            f"{item.get('item_name') or ''} {item.get('name') or ''}"
+        )
+        for field in ("color", "fit", "pattern", "mood"):
+            raw_value = item.get(field)
+            normalized = infer_query_intents(str(raw_value or ""))[field]
+            style_intents[field].update(split_tokens(raw_value))
+            style_intents[field].update(normalized)
+        style_intents["material"] = split_tokens(item.get("material"))
+        style_intents["season"].update(
+            season_set(item.get("sense_of_season") or item.get("season"))
+        )
+        return {
+            "style_intents": style_intents,
+            "style_embedding": None,
+            "category": self._style_category(item),
+        }
+
+    def _liked_item_pair_similarity(
+        self,
+        candidate: dict[str, Any],
+        liked_item: dict[str, Any],
+    ) -> float:
+        style_matches: list[float] = []
+        for field in ("color", "material", "season", "fit", "pattern", "mood"):
+            liked_terms = liked_item["style_intents"].get(field) or set()
+            if not liked_terms:
+                continue
+            candidate_terms = candidate["style_intents"].get(field) or set()
+            style_matches.append(len(candidate_terms & liked_terms) / len(liked_terms))
+
+        structured_similarity = (
+            sum(style_matches) / len(style_matches) if style_matches else None
+        )
+        semantic_similarity = cosine_similarity(
+            candidate.get("style_embedding") or [],
+            liked_item.get("style_embedding") or [],
+        )
+        if semantic_similarity is None:
+            return structured_similarity or 0.0
+        if structured_similarity is None:
+            return semantic_similarity
+        return (
+            semantic_similarity * LIKED_ITEM_SEMANTIC_WEIGHT
+            + structured_similarity * LIKED_ITEM_STRUCTURED_WEIGHT
+        )
+
+    def _closet_personalization_bonus(
+        self,
+        item: dict[str, Any],
+        closet_items: list[dict[str, Any]],
+        *,
+        item_features: dict[str, Any] | None = None,
+        closet_features: list[dict[str, Any]] | None = None,
+        request_mode: str = "direct",
+    ) -> float:
         if not closet_items:
             return 0.0
 
-        # Field weights sum to the advertised cap. Closet values are unioned per
-        # field, so adding a duplicate item cannot increase the score.
-        weights = {
-            "color": 0.04,
-            "mood": 0.05,
-            "sense_of_season": 0.04,
-            "pattern": 0.02,
-            "material": 0.02,
-            "fit": 0.02,
-            "category": 0.01,
-        }
-        closet_terms = {
-            field: {
-                token
-                for closet_item in closet_items
-                for token in split_tokens(closet_item.get(field))
-            }
-            for field in weights
-        }
-        bonus = sum(
-            weight
-            for field, weight in weights.items()
-            if split_tokens(item.get(field)) & closet_terms[field]
+        candidate = item_features or self._liked_item_features(item)
+        prepared_closet = (
+            closet_features
+            if closet_features is not None
+            else [self._liked_item_features(closet_item) for closet_item in closet_items]
         )
-        return min(bonus, CLOSET_COMPATIBILITY_MAX_BONUS)
+        taste_similarities = sorted(
+            (
+                self._liked_item_pair_similarity(candidate, closet_item)
+                for closet_item in prepared_closet
+            ),
+            reverse=True,
+        )
+        taste_similarity = self._top_style_profile_similarity(taste_similarities)
+        compatibility = max(
+            (
+                self._outfit_pair_compatibility(candidate, closet_item)
+                for closet_item in prepared_closet
+            ),
+            default=0.0,
+        )
+
+        if request_mode == "coordination":
+            taste_weight = COORDINATION_CLOSET_TASTE_WEIGHT
+            compatibility_weight = COORDINATION_CLOSET_COMPATIBILITY_WEIGHT
+        else:
+            taste_weight = CLOSET_TASTE_WEIGHT
+            compatibility_weight = CLOSET_COMPATIBILITY_WEIGHT
+
+        combined = taste_similarity * taste_weight + compatibility * compatibility_weight
+        return min(
+            CLOSET_PERSONALIZATION_MAX_BONUS * combined,
+            CLOSET_PERSONALIZATION_MAX_BONUS,
+        )
+
+    @staticmethod
+    def _top_style_profile_similarity(similarities: list[float]) -> float:
+        if not similarities or similarities[0] <= 0:
+            return 0.0
+        strongest = similarities[0]
+        nearest = similarities[:STYLE_PROFILE_DEPTH]
+        # Missing neighbors count as zero confidence: one item is weaker evidence
+        # than the same style appearing repeatedly in likes or the wardrobe.
+        return (strongest * 0.70) + (
+            (sum(nearest) / STYLE_PROFILE_DEPTH) * 0.30
+        )
+
+    def _outfit_pair_compatibility(
+        self,
+        candidate: dict[str, Any],
+        closet_item: dict[str, Any],
+    ) -> float:
+        if not self._categories_are_complementary(
+            candidate.get("category"),
+            closet_item.get("category"),
+        ):
+            return 0.0
+
+        semantic_similarity = cosine_similarity(
+            candidate.get("style_embedding") or [],
+            closet_item.get("style_embedding") or [],
+        )
+        structured_harmony = self._structured_outfit_harmony(candidate, closet_item)
+        if semantic_similarity is None:
+            return structured_harmony or 0.0
+        if structured_harmony is None:
+            return semantic_similarity
+        return (
+            semantic_similarity * OUTFIT_SEMANTIC_WEIGHT
+            + structured_harmony * OUTFIT_STRUCTURED_WEIGHT
+        )
+
+    @staticmethod
+    def _categories_are_complementary(left: Any, right: Any) -> bool:
+        return bool(left and right and right in COMPLEMENTARY_CATEGORIES.get(left, set()))
+
+    @staticmethod
+    def _style_category(item: dict[str, Any]) -> str | None:
+        raw_category = item.get("category") or item.get("label")
+        if not raw_category:
+            return None
+        normalized = normalize_category(raw_category)
+        if normalized in COMPLEMENTARY_CATEGORIES:
+            return normalized
+        inferred = infer_query_intents(str(raw_category))["category"]
+        return sorted(inferred)[0] if inferred else None
+
+    def _structured_outfit_harmony(
+        self,
+        candidate: dict[str, Any],
+        closet_item: dict[str, Any],
+    ) -> float | None:
+        candidate_terms = candidate["style_intents"]
+        closet_terms = closet_item["style_intents"]
+        field_scores: list[tuple[float, float]] = []
+
+        self._append_harmony_score(
+            field_scores,
+            0.30,
+            self._overlap_harmony(candidate_terms["mood"], closet_terms["mood"]),
+        )
+        self._append_harmony_score(
+            field_scores,
+            0.25,
+            self._season_harmony(candidate_terms["season"], closet_terms["season"]),
+        )
+        self._append_harmony_score(
+            field_scores,
+            0.25,
+            self._color_harmony(candidate_terms["color"], closet_terms["color"]),
+        )
+        self._append_harmony_score(
+            field_scores,
+            0.10,
+            self._pattern_harmony(candidate_terms["pattern"], closet_terms["pattern"]),
+        )
+        self._append_harmony_score(
+            field_scores,
+            0.05,
+            self._soft_overlap_harmony(
+                candidate_terms["material"], closet_terms["material"], mismatch=0.4
+            ),
+        )
+        self._append_harmony_score(
+            field_scores,
+            0.05,
+            self._soft_overlap_harmony(
+                candidate_terms["fit"], closet_terms["fit"], mismatch=0.5
+            ),
+        )
+        if not field_scores:
+            return None
+        total_weight = sum(weight for weight, _score in field_scores)
+        return sum(weight * score for weight, score in field_scores) / total_weight
+
+    @staticmethod
+    def _append_harmony_score(
+        scores: list[tuple[float, float]],
+        weight: float,
+        score: float | None,
+    ) -> None:
+        if score is not None:
+            scores.append((weight, score))
+
+    @staticmethod
+    def _overlap_harmony(left: set[str], right: set[str]) -> float | None:
+        if not left or not right:
+            return None
+        return 1.0 if left & right else 0.0
+
+    @staticmethod
+    def _soft_overlap_harmony(
+        left: set[str],
+        right: set[str],
+        *,
+        mismatch: float,
+    ) -> float | None:
+        if not left or not right:
+            return None
+        return 1.0 if left & right else mismatch
+
+    @staticmethod
+    def _season_harmony(left: set[str], right: set[str]) -> float | None:
+        if not left or not right:
+            return None
+        if "all" in left or "all" in right or left & right:
+            return 1.0
+        if any(frozenset((a, b)) in ADJACENT_SEASON_PAIRS for a in left for b in right):
+            return 0.7
+        return 0.0
+
+    @staticmethod
+    def _color_harmony(left: set[str], right: set[str]) -> float | None:
+        if not left or not right:
+            return None
+        if left & right:
+            return 1.0
+        if left & NEUTRAL_COLORS or right & NEUTRAL_COLORS:
+            return 0.85
+        if any(frozenset((a, b)) in COLOR_HARMONY_PAIRS for a in left for b in right):
+            return 0.8
+        return 0.35
+
+    @staticmethod
+    def _pattern_harmony(left: set[str], right: set[str]) -> float | None:
+        if not left or not right:
+            return None
+        if left & right:
+            return 1.0
+        if "solid" in left or "solid" in right:
+            return 0.9
+        return 0.2
 
     def _reference_compatibility_bonus(
         self,
