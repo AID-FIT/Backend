@@ -139,6 +139,7 @@ def normalize_user_profile(profile: object | None) -> dict | None:
 @router.post("", response_model=RecommendationResponse)
 async def create_recommendation(
     payload: RecommendationCreateRequest,
+    include_trace: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RecommendationResponse:
@@ -161,7 +162,14 @@ async def create_recommendation(
         closet_items=closet_payload,
         use_closet_style=payload.use_closet_style,
         user_profile=user_profile,
+        return_trace=include_trace,
     )
+    # ponytail: include_trace는 인증만 걸린 평가용 플래그다. 프로덕션에서 카탈로그
+    # 후보를 숨겨야 하면 settings 플래그로 게이트. 지금은 그럴 필요가 없어 안 건다.
+    if include_trace:
+        response = result["response"]
+        rag_trace = {key: value for key, value in result.items() if key != "response"}
+        return RecommendationResponse(**response, rag_trace=rag_trace)
     return RecommendationResponse(**result)
 
 

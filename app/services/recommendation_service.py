@@ -137,8 +137,13 @@ class RecommendationService:
         lock_retrieval_target: bool = False,
         diversify_by_category: bool = False,
         max_recommendations: int | None = None,
+        return_trace: bool = False,
     ) -> dict:
-        """추천을 생성하고 요청/분석/추천/아이템을 DB에 저장한 뒤 응답을 반환한다."""
+        """추천을 생성하고 요청/분석/추천/아이템을 DB에 저장한 뒤 응답을 반환한다.
+
+        return_trace=True면 응답 대신 파이프라인 트레이스 전체(검색·랭킹 후보 포함)를
+        돌려준다. RAG 평가용이다.
+        """
         normalized_image_urls = image_urls or []
         trace = await self.pipeline.run(
             query=query,
@@ -156,7 +161,7 @@ class RecommendationService:
         )
         await self._persist(db, user_id, query, trace)
         await db.commit()
-        return trace["response"]
+        return trace if return_trace else trace["response"]
 
     async def _persist(self, db: AsyncSession, user_id: str, query: str, trace: dict) -> None:
         response = trace.get("response") or {}
