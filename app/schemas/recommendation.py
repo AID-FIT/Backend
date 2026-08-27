@@ -142,6 +142,9 @@ class RecommendationResponse(AgentResponse):
     """
 
     applied_filters: AppliedFilters | None = None
+    # RAG 평가 전용. ?include_trace=true일 때만 채워진다. 검색·랭킹 후보와
+    # 해석된 쿼리·타깃 등 파이프라인 트레이스를 그대로 싣는다.
+    rag_trace: dict | None = None
 
 
 class FeedbackEventCreate(BaseModel):
